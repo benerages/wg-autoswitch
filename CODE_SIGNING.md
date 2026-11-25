@@ -23,4 +23,4 @@ All members use multi-factor authentication for GitHub and SignPath.
 
 ## Privacy
 
-WG-AutoSwitch does not transfer any information to networked systems unless the user explicitly requests it. It has no telemetry and no auto-update. Network features (gateway MAC, SSID, DNS suffix) are read locally to choose the tunnel and are never sent anywhere.
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it, with one disclosed exception: a daily check for new releases on GitHub, which can be turned off in the tray menu. See [PRIVACY.md](PRIVACY.md).

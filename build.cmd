@@ -32,7 +32,7 @@ rem /MT + /NODEFAULTLIB:libucrt.lib ucrt.lib = statische vcruntime, dynamische U
 set "CFLAGS=/nologo /std:c++20 /utf-8 /O1 /GL /GS /guard:cf /W4 /permissive- /EHs-c- /GR- /MT /Zc:inline"
 set "CFLAGS=%CFLAGS% /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /DNTDDI_VERSION=0x0A00000C"
 if not defined WGAS_NOWX set "CFLAGS=%CFLAGS% /WX"
-set "LFLAGS=/LTCG /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /guard:cf"
+set "LFLAGS=/LTCG /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /guard:cf /MANIFEST:EMBED"
 set "LIBS=/NODEFAULTLIB:libucrt.lib ucrt.lib iphlpapi.lib wlanapi.lib advapi32.lib user32.lib wintrust.lib crypt32.lib bcrypt.lib version.lib"
 if /i "%ARCH%"=="x64" set "LFLAGS=%LFLAGS% /CETCOMPAT"
 

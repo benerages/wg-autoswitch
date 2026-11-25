@@ -30,9 +30,14 @@ The user interface, command line and event log messages are available in **Engli
 - Manual switching holds until the next real network change. Roaming between access points of the same Wi-Fi does not count as a change.
 - Pause for 15 minutes, 1 hour or 8 hours
 
+**Updates**
+- The tray app checks GitHub once a day for a newer release and shows a notification (can be turned off in the tray menu; see [PRIVACY.md](PRIVACY.md)).
+- **Install update …** downloads the package for your architecture (ARM64 or x64), verifies the SHA-256 checksum and the Authenticode signature (publisher *SignPath Foundation*), and installs it after one UAC prompt. The elevated installer re-checks the signature, publisher and version in a protected folder and refuses downgrades. Unsigned releases are never installed automatically; for those the release page opens instead.
+- The version is shown in the window title, under **About WG-AutoSwitch …** in the tray menu, and with `wgas version`.
+
 **Tray**
 - Coloured dot: green with white core = tunnel up, grey = no tunnel (trusted network), orange = paused/manual/captive portal, red = service not reachable
-- Menu: pick a tunnel, disconnect, resume or pause automation, open, start at sign-in, exit
+- Menu: pick a tunnel, disconnect, resume or pause automation, language, updates, about, open, start at sign-in, exit
 - Starts at sign-in by default (can be turned off in the tray menu)
 
 Intentionally not included: AmneziaWG and proxy mode, which would need a separate WireGuard implementation. A network cannot be trusted by type or Wi-Fi name alone (see *Decision rules*).
@@ -74,9 +79,11 @@ Each binary is about 80 KB. If `wgas-gui.exe` is still running, the linker canno
 [`.github/workflows/build.yml`](.github/workflows/build.yml) runs the tests and builds ARM64 and x64 on every push. Pushing a version tag creates a draft release with both ZIP packages and `SHA256SUMS.txt`:
 
 ```bat
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.3.1
+git push origin v1.3.1
 ```
+
+To release, raise the version in [`src/version.h`](src/version.h) (the only place it is defined), commit, then push the tag `v<version>`. The workflow refuses tags that do not match `version.h`.
 
 Release binaries are signed via SignPath once the project is accepted; see [CODE_SIGNING.md](CODE_SIGNING.md).
 
@@ -108,6 +115,7 @@ Updating WireGuard needs no action.
 | `wgas check` / `reload` | validate or apply `config.ini` (admin) |
 | `wgas connect <tunnel>` / `disconnect` / `auto` | switch manually, or hand control back to the automation |
 | `wgas pause <min>` / `resume` | pause or resume the automation |
+| `wgas version` | show the version |
 
 Configuration file: `%ProgramData%\WgAutoSwitch\config.ini` (normally edited through the GUI; see `config.example.ini`).
 Event log: *Windows Logs › Application*, source `WgAutoSwitch`. Only state changes and errors are logged.
@@ -121,7 +129,7 @@ See [CODE_SIGNING.md](CODE_SIGNING.md). Until signing is in place, Windows Smart
 - The service runs as the virtual account `NT SERVICE\WgAutoSwitch` with only `SeChangeNotifyPrivilege` and `SeCreateGlobalPrivilege` (for the state signal to the GUI). On the WireGuard tunnel services it may only start, stop and query status, granted by service ACL.
 - Named pipe `\\.\pipe\WgAutoSwitch`: local only, network logons denied; accessible to SYSTEM, Administrators and interactively signed-in users. It accepts only status, connect, disconnect and pause. Configuration and keys can only be changed by Administrators.
 - The GUI checks that the pipe server really is the service (process ID) and connects at identification level only.
-- No listening ports, no telemetry, no auto-update.
+- No listening ports, no telemetry. The only network access is the update check described in [PRIVACY.md](PRIVACY.md); updates are installed only after confirmation and only if correctly signed.
 - `config.ini` is owned by Administrators; the service can only read it. If the file permissions are unsafe, the fail-safe applies.
 - Kill switch: use `AllowedIPs = 0.0.0.0/0, ::/0` in the `.conf`. WireGuard for Windows then blocks untunneled traffic while the tunnel is up.
 
@@ -143,5 +151,7 @@ src/i18n.*       language selection; src/i18n_table.h holds the German/English t
 src/common.*     paths, config read/write, network features, tunnel services, pipe client
 src/wgas.cpp     service (event loop, pipe server) and command line
 src/gui.cpp      tray, main window, rule editor, tunnel editor (elevated mode)
+src/update.*     update check and download (WinHTTP, SHA-256, signature pre-check)
+src/version.h    version number and repository (single source for code, resources and CI)
 build.cmd        reproducible build (MSVC, ARM64/x64)
 ```

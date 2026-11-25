@@ -6,9 +6,9 @@
 
 #define WGAS_VERSION_MAJOR 1
 #define WGAS_VERSION_MINOR 3
-#define WGAS_VERSION_PATCH 0
-#define WGAS_VERSION_STR   "1.3.0"
-#define WGAS_VERSION_WSTR  L"1.3.0"
+#define WGAS_VERSION_PATCH 1
+#define WGAS_VERSION_STR   "1.3.1"
+#define WGAS_VERSION_WSTR  L"1.3.1"
 
 // GitHub-Repository fuer die Update-Pruefung und den Download der Releases.
 #define WGAS_REPO_WSTR     L"benerages/wg-autoswitch"

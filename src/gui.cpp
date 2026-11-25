@@ -58,6 +58,7 @@ enum : UINT {
     ID_TRAY_OPEN = 1000, ID_TRAY_DISCONNECT, ID_TRAY_AUTO, ID_TRAY_PAUSE15, ID_TRAY_PAUSE60, ID_TRAY_PAUSE480,
     ID_TRAY_RESUME, ID_TRAY_AUTOSTART, ID_TRAY_EXIT, ID_TRAY_LANG_AUTO, ID_TRAY_LANG_DE, ID_TRAY_LANG_EN,
     ID_TRAY_UPDATE_CHECK, ID_TRAY_UPDATE_AUTO, ID_TRAY_UPDATE_INSTALL, ID_TRAY_ABOUT,
+    ID_TRAY_WG_DOWNLOAD,
     ID_TRAY_TUNNEL0 = 1100,
 };
 
@@ -523,9 +524,70 @@ void HideMain() {
 
 bool AutoUpdateEnabled();
 
+// Offizielle WireGuard-Installation vorhanden? Ohne sie kann der Dienst keine Tunnel schalten.
+bool WireGuardInstalled() { return FileExists(g_paths.wgExe); }
+
+// Feste Adresse (kein Wert aus Konfiguration oder Netz) - die Download-Seite bietet ARM64 und x64 an.
+void OpenWireGuardDownload() {
+    ShellExecuteW(nullptr, L"open", L"https://www.wireguard.com/install/", nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+DWORD GetUserDword(const wchar_t* name, DWORD def);
+void SetUserDword(const wchar_t* name, DWORD v);
+
+// Beim Start: fehlt WireGuard, darauf hinweisen. Knoepfe "Download-Seite oeffnen" und "OK",
+// dazu "Diesen Hinweis nicht mehr anzeigen" (HKCU\Software\WgAutoSwitch\HideWireGuardNotice).
+// Tray-Eintrag und Statuszeile bleiben auch dann sichtbar.
+void CheckWireGuardOnStart() {
+    if (WireGuardInstalled()) {
+        // Wieder vorhanden: Abschaltung zuruecksetzen, damit eine spaetere Deinstallation wieder auffaellt.
+        if (GetUserDword(L"HideWireGuardNotice", 0)) SetUserDword(L"HideWireGuardNotice", 0);
+        return;
+    }
+    if (GetUserDword(L"HideWireGuardNotice", 0)) return;
+
+    const wchar_t* head = T(L"WireGuard für Windows ist nicht installiert.");
+    const wchar_t* body = T(L"WG-AutoSwitch schaltet die Tunnel über die offizielle WireGuard-Installation und kann ohne sie nichts tun. Ihre importierten Tunnel bleiben erhalten.");
+    int button = 0;
+    BOOL hide = FALSE;
+
+    // TaskDialogIndirect gibt es nur in comctl32 v6; zur Laufzeit holen statt importieren,
+    // damit das Programm auch ohne aktives Manifest startet (dann einfache MessageBox).
+    using TaskDialogIndirectFn = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
+    HMODULE cc = GetModuleHandleW(L"comctl32.dll");
+    auto tdi = cc ? reinterpret_cast<TaskDialogIndirectFn>(
+                        reinterpret_cast<void*>(GetProcAddress(cc, "TaskDialogIndirect"))) : nullptr;
+    TASKDIALOG_BUTTON buttons[] = { { IDYES, T(L"Download-Seite öffnen") } };
+    TASKDIALOGCONFIG tc;
+    ZeroMemory(&tc, sizeof tc);
+    tc.cbSize = sizeof tc;
+    tc.hwndParent = IsWindowVisible(g_main) ? g_main : nullptr;
+    tc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.dwCommonButtons = TDCBF_OK_BUTTON;
+    tc.pszWindowTitle = kTitle;
+    tc.pszMainIcon = TD_WARNING_ICON;
+    tc.pszMainInstruction = head;
+    tc.pszContent = body;
+    tc.pButtons = buttons;
+    tc.cButtons = _countof(buttons);
+    tc.nDefaultButton = IDOK;
+    tc.pszVerificationText = T(L"Diesen Hinweis nicht mehr anzeigen");
+    if (!tdi || FAILED(tdi(&tc, &button, nullptr, &hide))) {
+        wchar_t text[700];
+        swprintf_s(text, _countof(text), L"%ls\n\n%ls\n\n%ls", head, body, T(L"Download-Seite von WireGuard jetzt öffnen?"));
+        button = MessageBoxW(g_main, text, kTitle, MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND);
+    }
+    if (hide) SetUserDword(L"HideWireGuardNotice", 1);
+    if (button == IDYES) OpenWireGuardDownload();
+}
+
 void TrayMenu() {
     HMENU menu = CreatePopupMenu();
     HMENU pause = CreatePopupMenu();
+    if (!WireGuardInstalled()) {
+        AppendMenuW(menu, MF_STRING, ID_TRAY_WG_DOWNLOAD, T(L"WireGuard herunterladen …"));
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
     if (g_m.connected) {
         for (int i = 0; i < g_m.nTun && i < 64; ++i) {
             const TunInfo& t = g_m.tun[i];
@@ -1184,7 +1246,9 @@ void UpdateButtons() {
 void UpdateUi() {
     // Statuszeile (Reiter Tunnel)
     wchar_t s[1200] = L"";
-    if (!g_m.installed) {
+    if (!WireGuardInstalled()) {
+        Appendf(s, _countof(s), T(L"WireGuard für Windows fehlt – bitte installieren: https://www.wireguard.com/install/"));
+    } else if (!g_m.installed) {
         Appendf(s, _countof(s), T(L"Der Dienst WG-AutoSwitch ist nicht installiert. Ohne Dienst gibt es keine Automatik."));
     } else if (!g_m.connected) {
         Appendf(s, _countof(s), T(L"Dienst nicht erreichbar (gestoppt?). Ereignisanzeige › Anwendung, Quelle WgAutoSwitch."));
@@ -1734,6 +1798,7 @@ void OnTrayCommand(UINT id) {
     case ID_TRAY_UPDATE_AUTO:    SetUserDword(L"AutoUpdateCheck", AutoUpdateEnabled() ? 0 : 1); break;
     case ID_TRAY_UPDATE_INSTALL: ShowUpdateDialog(); break;
     case ID_TRAY_ABOUT:          ShowAbout(); break;
+    case ID_TRAY_WG_DOWNLOAD:    OpenWireGuardDownload(); break;
     default: break;
     }
 }
@@ -1764,9 +1829,6 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         UpdateTray(NIM_MODIFY);
         return 0;
     }
-    case WM_CTLCOLORSTATIC:   // Beschriftungen ohne grauen Hintergrund
-        SetBkMode(reinterpret_cast<HDC>(wp), TRANSPARENT);
-        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
     case WM_COMMAND:
         if (lp == 0 && HIWORD(wp) == 0 && LOWORD(wp) >= ID_TRAY_OPEN) { OnTrayCommand(LOWORD(wp)); return 0; }
         if (HIWORD(wp) == BN_CLICKED) {
@@ -1867,12 +1929,12 @@ bool RegisterClasses() {
     wc.lpfnWndProc = MainProc;
     wc.hInstance = g_inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    wc.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);   // wie Standarddialoge: Beschriftungen ohne Kanten
     wc.lpszClassName = kMainClass;
     if (!RegisterClassExW(&wc)) return false;
     wc.lpfnWndProc = FormProc;
     wc.lpszClassName = kFormClass;
-    wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    wc.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);   // wie Standarddialoge: Beschriftungen ohne Kanten
     return RegisterClassExW(&wc) != 0;
 }
 
@@ -1909,6 +1971,7 @@ int RunMain(bool startHidden) {
     Refresh();
     UpdateTray(NIM_ADD);
     if (!startHidden) ShowMain();
+    CheckWireGuardOnStart();
     ShowPrivacyNoticeOnce();
     SetTimer(g_main, TIMER_UPDATE, 60u * 1000u, nullptr);   // erste automatische Pruefung nach 1 Minute
 

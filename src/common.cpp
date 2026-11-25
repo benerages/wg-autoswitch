@@ -37,6 +37,8 @@ bool InitPaths(Paths& p) {
     swprintf_s(p.dataDir, MAX_PATH, L"%ls\\WgAutoSwitch", pd);
     swprintf_s(p.cfg,     MAX_PATH, L"%ls\\WgAutoSwitch\\config.ini", pd);
     swprintf_s(p.tunDir,  MAX_PATH, L"%ls\\WgAutoSwitch\\tunnels", pd);
+    // Das WireGuard-MSI installiert fest nach %ProgramFiles%\WireGuard (kein waehlbarer Ordner);
+    // %ProgramFiles% zeigt auch dann richtig, wenn Windows nicht auf C: liegt.
     swprintf_s(p.wgExe,   MAX_PATH, L"%ls\\WireGuard\\wireguard.exe", pf);
     return true;
 }
