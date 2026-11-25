@@ -1,0 +1,105 @@
+﻿WG-AutoSwitch - Installation
+============================
+
+Deutsch: siehe weiter unten.
+
+ENGLISH
+-------
+
+WG-AutoSwitch turns your WireGuard tunnels on or off automatically depending
+on the network you are connected to: off at home, on everywhere else.
+
+Requirements
+  - Windows 11, ARM64 or x64 (use the ZIP that matches your device)
+  - The official WireGuard for Windows: https://www.wireguard.com/install/
+
+Install
+  1. Install WireGuard for Windows. Do NOT add tunnels in the WireGuard app
+     itself - WG-AutoSwitch manages them.
+  2. Unzip this package to any folder.
+  3. Start wgas-gui.exe and click "Install service ..." (UAC prompt).
+     This copies both programs to C:\Program Files\WgAutoSwitch\ and sets up
+     the service, which starts with Windows.
+  4. Exit the tray app once (tray menu > Exit) and start it again from
+     C:\Program Files\WgAutoSwitch\wgas-gui.exe. From now on it starts
+     automatically at sign-in. You can delete the unzipped folder.
+  5. Tab "Tunnels": "Import ..." (a .conf file, e.g. from the OPNsense
+     peer generator) or "From clipboard ...".
+  6. Tab "Auto-Tunneling", while connected to your home network:
+     "Save as trusted ...", then "Apply (admin)". Done.
+
+Windows SmartScreen
+  As long as this release is not code-signed, Windows may warn on the first
+  start: click "More info" > "Run anyway".
+
+Update
+  Signed releases: tray menu > "Install update ...".
+  Otherwise: exit the tray app, unzip the new release, then run in an
+  administrator PowerShell inside that folder:
+      .\wgas.exe install
+  Your tunnels and rules are kept.
+
+Uninstall
+  In an administrator PowerShell:
+      & "$env:ProgramFiles\WgAutoSwitch\wgas.exe" uninstall
+  Add /purge to also delete tunnels and rules.
+
+Check the download (optional)
+  Compare the output of
+      Get-FileHash <file>.zip
+  with SHA256SUMS.txt on the release page.
+
+More information, source code and help:
+  https://github.com/benerages/wg-autoswitch
+
+
+DEUTSCH
+-------
+
+WG-AutoSwitch schaltet deine WireGuard-Tunnel automatisch je nach
+verbundenem Netz ein oder aus: zuhause aus, überall sonst an.
+
+Voraussetzungen
+  - Windows 11, ARM64 oder x64 (das passende ZIP für dein Gerät)
+  - Das offizielle WireGuard für Windows: https://www.wireguard.com/install/
+
+Installation
+  1. WireGuard für Windows installieren. Tunnel NICHT in der WireGuard-App
+     selbst anlegen - das übernimmt WG-AutoSwitch.
+  2. Dieses Paket in einen beliebigen Ordner entpacken.
+  3. wgas-gui.exe starten und auf "Dienst installieren ..." klicken
+     (UAC-Abfrage). Damit werden beide Programme nach
+     C:\Program Files\WgAutoSwitch\ kopiert und der Dienst eingerichtet,
+     der mit Windows startet.
+  4. Die Tray-App einmal beenden (Tray-Menü > Beenden) und aus
+     C:\Program Files\WgAutoSwitch\wgas-gui.exe neu starten. Ab jetzt startet
+     sie automatisch bei der Anmeldung. Der entpackte Ordner kann gelöscht
+     werden.
+  5. Reiter "Tunnel": "Importieren ..." (eine .conf-Datei, z. B. aus dem
+     Peer-Generator von OPNsense) oder "Aus Zwischenablage ...".
+  6. Reiter "Auto-Tunneling", während du im Heimnetz bist:
+     "Als vertraut speichern ...", dann "Übernehmen (Admin)". Fertig.
+
+Windows SmartScreen
+  Solange dieses Release nicht signiert ist, kann Windows beim ersten Start
+  warnen: "Weitere Informationen" > "Trotzdem ausführen".
+
+Update
+  Signierte Releases: Tray-Menü > "Update auf ... installieren".
+  Sonst: Tray-App beenden, neues Release entpacken und in einer
+  Admin-PowerShell in diesem Ordner ausführen:
+      .\wgas.exe install
+  Tunnel und Regeln bleiben erhalten.
+
+Deinstallation
+  In einer Admin-PowerShell:
+      & "$env:ProgramFiles\WgAutoSwitch\wgas.exe" uninstall
+  Mit /purge werden auch Tunnel und Regeln gelöscht.
+
+Download prüfen (optional)
+  Die Ausgabe von
+      Get-FileHash <datei>.zip
+  mit SHA256SUMS.txt auf der Release-Seite vergleichen.
+
+Weitere Informationen, Quellcode und Hilfe:
+  https://github.com/benerages/wg-autoswitch

@@ -14,6 +14,45 @@ Typical use: at home (trusted network) no tunnel; anywhere else (hotel, train, p
 
 The user interface, command line and event log messages are available in **English and German**. The language follows Windows (German Windows → German, everything else → English) and can be changed in the tray menu under *Language*. The service writes its event log in the system language.
 
+## Download and install
+
+1. Install [WireGuard for Windows](https://www.wireguard.com/install/) (the ARM64 MSI on ARM devices). Do **not** add tunnels in the WireGuard app itself.
+2. Download the package for your device from the [latest release](https://github.com/benerages/wg-autoswitch/releases/latest):
+   - `wg-autoswitch-<version>-windows-arm64.zip` for Surface and other Snapdragon devices
+   - `wg-autoswitch-<version>-windows-x64.zip` for Intel and AMD devices
+
+   Optionally compare the file with `SHA256SUMS.txt` (`Get-FileHash <file>.zip` in PowerShell).
+3. Unzip it, start `wgas-gui.exe` and click **Install service …** (UAC prompt). This copies both programs to `%ProgramFiles%\WgAutoSwitch\` and sets up the service, which then starts with Windows before sign-in. Exit the tray app once and start it again from `%ProgramFiles%\WgAutoSwitch\wgas-gui.exe`; the sign-in entry already points there. The unzipped folder can be deleted afterwards.
+4. On the **Tunnels** tab, choose **Import …** (a `.conf` file, e.g. from the OPNsense *Peer generator*) or **From clipboard …**.
+5. On the **Auto-Tunneling** tab, at home: **Save as trusted …**, then **Apply (admin)**.
+
+Until releases are code-signed, Windows SmartScreen may warn on first start (*More info › Run anyway*); see [Code signing](#code-signing). Each ZIP also contains `INSTALLATION.txt` with these steps in English and German.
+
+### Update
+
+Signed releases can be installed from the tray menu (**Install update …**). Otherwise: exit the tray app, unzip the new release and run in an elevated PowerShell inside that folder:
+
+```powershell
+.\wgas.exe install
+```
+
+Configuration, rules and tunnels in `%ProgramData%\WgAutoSwitch` are kept.
+
+### Uninstall
+
+In an elevated PowerShell: `& "$env:ProgramFiles\WgAutoSwitch\wgas.exe" uninstall` removes the service and programs (files in use are removed at the next restart) and keeps your tunnels and rules. Add `/purge` to delete those as well. WireGuard for Windows itself stays installed.
+
+### Reinstalling WireGuard
+
+Uninstalling WireGuard removes its tunnel services. Your keys and rules are kept in `%ProgramData%\WgAutoSwitch`. After reinstalling WireGuard, restore all tunnels from an elevated PowerShell:
+
+```powershell
+$wgas = "$env:ProgramFiles\WgAutoSwitch\wgas.exe"
+Get-ChildItem "$env:ProgramData\WgAutoSwitch\tunnels\*.conf" | ForEach-Object { & $wgas import $_.FullName }
+```
+
+Updating WireGuard needs no action.
+
 ## Features
 
 **Tunnels**
@@ -57,54 +96,6 @@ Intentionally not included: AmneziaWG and proxy mode, which would need a separat
 
 A **trusted network** (no tunnel) needs the gateway MAC **plus** a DNS suffix, SSID or BSSID. A Wi-Fi name alone can be spoofed by anyone.
 
-## Build
-
-Requirements: [Build Tools for Visual Studio 2026](https://visualstudio.microsoft.com/downloads/) (Visual Studio 2022 works as well) with
-- workload *Desktop development with C++*
-- *MSVC ARM64 build tools* (for ARM64) and *MSVC x64/x86 build tools* (for x64)
-- Windows 11 SDK (10.0.22621 or newer)
-
-No other dependencies: C++20 and Win32 only, no frameworks. `build.cmd` finds the newest installed Visual Studio / Build Tools via `vswhere` and works from a plain command prompt. Building from the Visual Studio IDE also works: open the folder and use the tasks from `tasks.vs.json` (right-click the root folder).
-
-```bat
-build.cmd test      & rem unit tests (decision logic, translation table)
-build.cmd           & rem -> build\arm64\wgas.exe and build\arm64\wgas-gui.exe
-build.cmd x64       & rem x64 build
-```
-
-Each binary is about 80 KB. If `wgas-gui.exe` is still running, the linker cannot overwrite it, so choose **Exit** in the tray menu first. Optionally `set WGAS_SIGN_THUMB=<certificate thumbprint>` signs both binaries.
-
-### Continuous integration and releases
-
-[`.github/workflows/build.yml`](.github/workflows/build.yml) runs the tests and builds ARM64 and x64 on every push. Pushing a version tag creates a draft release with both ZIP packages and `SHA256SUMS.txt`:
-
-```bat
-git tag v1.3.1
-git push origin v1.3.1
-```
-
-To release, raise the version in [`src/version.h`](src/version.h) (the only place it is defined), commit, then push the tag `v<version>`. The workflow refuses tags that do not match `version.h`.
-
-Release binaries are signed via SignPath once the project is accepted; see [CODE_SIGNING.md](CODE_SIGNING.md).
-
-## Install
-
-1. Install [WireGuard for Windows](https://www.wireguard.com/install/) (ARM64 MSI on ARM devices). Do **not** add tunnels in the WireGuard app itself.
-2. Start `build\arm64\wgas-gui.exe` and click **Install service …** (UAC prompt). This copies both programs to `%ProgramFiles%\WgAutoSwitch\` and sets up the service, which then starts with Windows before sign-in. Exit the tray app once and start it again from `%ProgramFiles%\WgAutoSwitch\wgas-gui.exe`; the sign-in entry already points there.
-3. On the **Tunnels** tab, choose **Import …** (a `.conf` file) or **From clipboard …**.
-4. On the **Auto-Tunneling** tab, at home: **Save as trusted …**, then **Apply (admin)**.
-
-### Reinstalling WireGuard
-
-Uninstalling WireGuard removes its tunnel services. Your keys and rules are kept in `%ProgramData%\WgAutoSwitch`. After reinstalling WireGuard, restore all tunnels from an elevated PowerShell:
-
-```powershell
-$wgas = "$env:ProgramFiles\WgAutoSwitch\wgas.exe"
-Get-ChildItem "$env:ProgramData\WgAutoSwitch\tunnels\*.conf" | ForEach-Object { & $wgas import $_.FullName }
-```
-
-Updating WireGuard needs no action.
-
 ## Command line
 
 | Command | Purpose |
@@ -122,7 +113,7 @@ Event log: *Windows Logs › Application*, source `WgAutoSwitch`. Only state cha
 
 ## Code signing
 
-See [CODE_SIGNING.md](CODE_SIGNING.md). Until signing is in place, Windows SmartScreen warns on first start (*More info › Run anyway*).
+See [CODE_SIGNING.md](CODE_SIGNING.md). Windows release binaries will be signed via the SignPath Foundation once the project is accepted: *Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).* Until then, Windows SmartScreen warns on first start (*More info › Run anyway*).
 
 ## Security
 
@@ -142,6 +133,36 @@ The service sleeps in a single wait call without a timeout. It is only woken by 
 - **SSID/BSSID on Windows 11 24H2+** may only be readable with location services enabled. If missing, the Wi-Fi network is treated as unknown (fail-safe); rules based on gateway MAC plus DNS suffix keep working.
 - **Handshake time** is not shown: the official WireGuard installation exposes it to Administrators only. The GUI shows the adapter's traffic counters instead.
 - Requires the official WireGuard for Windows installation (driver and tunnel services).
+
+## Build from source
+
+Requirements: [Build Tools for Visual Studio 2026](https://visualstudio.microsoft.com/downloads/) (Visual Studio 2022 works as well) with
+- workload *Desktop development with C++*
+- *MSVC ARM64 build tools* (for ARM64) and *MSVC x64/x86 build tools* (for x64)
+- Windows 11 SDK (10.0.22621 or newer)
+
+No other dependencies: C++20 and Win32 only, no frameworks. `build.cmd` finds the newest installed Visual Studio / Build Tools via `vswhere` and works from a plain command prompt. Building from the Visual Studio IDE also works: open the folder and use the tasks from `tasks.vs.json` (right-click the root folder).
+
+```bat
+build.cmd test      & rem unit tests (decision logic, translation table)
+build.cmd           & rem -> build\arm64\wgas.exe and build\arm64\wgas-gui.exe
+build.cmd x64       & rem x64 build
+```
+
+Each binary is about 140–160 KB. If `wgas-gui.exe` is still running, the linker cannot overwrite it, so choose **Exit** in the tray menu first. Optionally `set WGAS_SIGN_THUMB=<certificate thumbprint>` signs both binaries.
+
+### Continuous integration and releases
+
+[`.github/workflows/build.yml`](.github/workflows/build.yml) runs the tests and builds ARM64 and x64 on every push. Pushing a version tag creates a draft release with both ZIP packages and `SHA256SUMS.txt`:
+
+```bat
+git tag v1.3.1
+git push origin v1.3.1
+```
+
+To release, raise the version in [`src/version.h`](src/version.h) (the only place it is defined), commit, then push the tag `v<version>`. The workflow refuses tags that do not match `version.h`.
+
+Each release ZIP contains `wgas.exe`, `wgas-gui.exe`, `INSTALLATION.txt` (English/German), `README.md`, `config.example.ini` and the license. Release binaries are signed via SignPath once the project is accepted; see [CODE_SIGNING.md](CODE_SIGNING.md).
 
 ## Layout
 
