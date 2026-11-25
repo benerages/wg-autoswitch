@@ -37,9 +37,9 @@ set "LIBS=/NODEFAULTLIB:libucrt.lib ucrt.lib iphlpapi.lib wlanapi.lib advapi32.l
 if /i "%ARCH%"=="x64" set "LFLAGS=%LFLAGS% /CETCOMPAT"
 
 rem Dienst + CLI
-cl %CFLAGS% /I %OUT% /Fo%OUT%\ /Fe%OUT%\wgas.exe src\wgas.cpp src\common.cpp %OUT%\wgas.res /link %LFLAGS% /SUBSYSTEM:CONSOLE %LIBS% || goto :fail
+cl %CFLAGS% /I %OUT% /Fo%OUT%\ /Fe%OUT%\wgas.exe src\wgas.cpp src\common.cpp src\i18n.cpp %OUT%\wgas.res /link %LFLAGS% /SUBSYSTEM:CONSOLE %LIBS% || goto :fail
 rem Oberflaeche
-cl %CFLAGS% /I %OUT% /Fo%OUT%\ /Fe%OUT%\wgas-gui.exe src\gui.cpp src\common.cpp %OUT%\gui.res /link %LFLAGS% /SUBSYSTEM:WINDOWS %LIBS% gdi32.lib comctl32.lib comdlg32.lib shell32.lib || goto :fail
+cl %CFLAGS% /I %OUT% /Fo%OUT%\ /Fe%OUT%\wgas-gui.exe src\gui.cpp src\common.cpp src\i18n.cpp %OUT%\gui.res /link %LFLAGS% /SUBSYSTEM:WINDOWS %LIBS% gdi32.lib comctl32.lib comdlg32.lib shell32.lib || goto :fail
 
 if defined WGAS_SIGN_THUMB (
   signtool sign /fd SHA256 /sha1 %WGAS_SIGN_THUMB% /tr http://timestamp.digicert.com /td SHA256 %OUT%\wgas.exe %OUT%\wgas-gui.exe || goto :fail
@@ -53,8 +53,10 @@ exit /b 0
 call :vsenv %HOSTARCH% || exit /b 1
 if not exist build mkdir build
 cl /nologo /std:c++20 /utf-8 /W4 /WX /EHsc /Fobuild\ /Febuild\test_decide.exe tests\test_decide.cpp || goto :fail
-build\test_decide.exe
-exit /b %errorlevel%
+cl /nologo /std:c++20 /utf-8 /W4 /WX /EHsc /Fobuild\ /Febuild\test_i18n.exe tests\test_i18n.cpp || goto :fail
+build\test_decide.exe || goto :fail
+build\test_i18n.exe || goto :fail
+exit /b 0
 
 rem --- Visual-Studio-Umgebung laden, falls cl.exe nicht schon fuer das Ziel bereit ist
 :vsenv

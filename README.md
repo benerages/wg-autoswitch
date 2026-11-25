@@ -4,7 +4,7 @@ A small native companion for **WireGuard for Windows** that turns your tunnel on
 
 Typical use: at home (trusted network) no tunnel; anywhere else (hotel, train, phone hotspot, office) the tunnel comes up by itself.
 
-> **Written with Claude.** The code, build script and documentation were created together with [Claude](https://claude.ai) (Anthropic), then built and tested on a real Surface Pro (ARM64).
+> **Written with Claude.** The code, build script and documentation were created together with [Claude](https://claude.ai) (Anthropic), then built and tested on a real Surface (ARM64).
 
 | File | Role |
 |---|---|
@@ -12,7 +12,7 @@ Typical use: at home (trusted network) no tunnel; anywhere else (hotel, train, p
 | `wgas-gui.exe` | Tray icon and window; runs without admin rights and asks via UAC only for keys and rules |
 | WireGuard for Windows | The official installation (ARM64 MSI) provides the driver and the tunnel services |
 
-The user interface is currently in German.
+The user interface, command line and event log messages are available in **English and German**. The language follows Windows (German Windows → German, everything else → English) and can be changed in the tray menu under *Language*. The service writes its event log in the system language.
 
 ## Features
 
@@ -57,19 +57,30 @@ A **trusted network** (no tunnel) needs the gateway MAC **plus** a DNS suffix, S
 Requirements: [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) with *Desktop development with C++*, *MSVC ARM64 build tools* and the Windows 11 SDK (10.0.22621 or newer). No other dependencies: C++20 and Win32 only, no frameworks.
 
 ```bat
-build.cmd test      & rem unit tests of the decision logic
+build.cmd test      & rem unit tests (decision logic, translation table)
 build.cmd           & rem -> build\arm64\wgas.exe and build\arm64\wgas-gui.exe
 build.cmd x64       & rem x64 build
 ```
 
 Each binary is about 80 KB. If `wgas-gui.exe` is still running, the linker cannot overwrite it, so choose **Exit** in the tray menu first. Optionally `set WGAS_SIGN_THUMB=<certificate thumbprint>` signs both binaries.
 
+### Continuous integration and releases
+
+[`.github/workflows/build.yml`](.github/workflows/build.yml) runs the tests and builds ARM64 and x64 on every push. Pushing a version tag creates a draft release with both ZIP packages and `SHA256SUMS.txt`:
+
+```bat
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+Release binaries are signed via SignPath once the project is accepted; see [CODE_SIGNING.md](CODE_SIGNING.md).
+
 ## Install
 
 1. Install [WireGuard for Windows](https://www.wireguard.com/install/) (ARM64 MSI on ARM devices). Do **not** add tunnels in the WireGuard app itself.
-2. Start `build\arm64\wgas-gui.exe` and click **Dienst installieren …** (*install service*, UAC prompt). This copies both programs to `%ProgramFiles%\WgAutoSwitch\` and sets up the service, which then starts with Windows before sign-in. Exit the tray app once and start it again from `%ProgramFiles%\WgAutoSwitch\wgas-gui.exe`; the sign-in entry already points there.
-3. On the **Tunnel** tab, choose **Importieren …** (import a `.conf`) or **Aus Zwischenablage …** (from clipboard).
-4. On the **Auto-Tunneling** tab, at home: **Als vertraut speichern …** (*save as trusted*), then **Übernehmen (Admin)** (*apply*).
+2. Start `build\arm64\wgas-gui.exe` and click **Install service …** (UAC prompt). This copies both programs to `%ProgramFiles%\WgAutoSwitch\` and sets up the service, which then starts with Windows before sign-in. Exit the tray app once and start it again from `%ProgramFiles%\WgAutoSwitch\wgas-gui.exe`; the sign-in entry already points there.
+3. On the **Tunnels** tab, choose **Import …** (a `.conf` file) or **From clipboard …**.
+4. On the **Auto-Tunneling** tab, at home: **Save as trusted …**, then **Apply (admin)**.
 
 ### Reinstalling WireGuard
 
@@ -96,6 +107,10 @@ Updating WireGuard needs no action.
 Configuration file: `%ProgramData%\WgAutoSwitch\config.ini` (normally edited through the GUI; see `config.example.ini`).
 Event log: *Windows Logs › Application*, source `WgAutoSwitch`. Only state changes and errors are logged.
 
+## Code signing
+
+See [CODE_SIGNING.md](CODE_SIGNING.md). Until signing is in place, Windows SmartScreen warns on first start (*More info › Run anyway*).
+
 ## Security
 
 - The service runs as the virtual account `NT SERVICE\WgAutoSwitch` with only `SeChangeNotifyPrivilege` and `SeCreateGlobalPrivilege` (for the state signal to the GUI). On the WireGuard tunnel services it may only start, stop and query status, granted by service ACL.
@@ -119,6 +134,7 @@ The service sleeps in a single wait call without a timeout. It is only woken by 
 
 ```
 src/decide.h     decision logic (no Windows headers; unit tests in tests/)
+src/i18n.*       language selection; src/i18n_table.h holds the German/English texts
 src/common.*     paths, config read/write, network features, tunnel services, pipe client
 src/wgas.cpp     service (event loop, pipe server) and command line
 src/gui.cpp      tray, main window, rule editor, tunnel editor (elevated mode)

@@ -27,6 +27,7 @@
 #include <wchar.h>
 
 #include "decide.h"
+#include "i18n.h"
 
 namespace wgas {
 

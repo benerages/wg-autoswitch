@@ -1,0 +1,135 @@
+# Build, Test und Release fuer WG-AutoSwitch (Windows ARM64 + x64).
+#
+#  * Jeder Push / Pull Request: Unit-Tests, Build ARM64 + x64, Pakete als Workflow-Artefakt.
+#  * Tag "v*" (z. B. v1.2.0): zusaetzlich Signatur ueber SignPath (falls eingerichtet)
+#    und ein Release-ENTWURF mit beiden ZIPs und SHA256SUMS.txt.
+#
+# SignPath einrichten (Repository › Settings › Secrets and variables › Actions):
+#   Secret   SIGNPATH_API_TOKEN
+#   Variable SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_POLICY_SLUG
+# Ohne diese Werte laufen Releases unsigniert durch.
+
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Unit tests
+        shell: cmd
+        run: build.cmd test
+
+      - name: Build ARM64
+        shell: cmd
+        run: build.cmd
+
+      - name: Build x64
+        shell: cmd
+        run: build.cmd x64
+
+      - name: Collect binaries
+        shell: pwsh
+        run: |
+          foreach ($arch in 'arm64', 'x64') {
+            New-Item -ItemType Directory -Force "unsigned/$arch" | Out-Null
+            Copy-Item "build/$arch/wgas.exe", "build/$arch/wgas-gui.exe" "unsigned/$arch/"
+          }
+          Get-ChildItem -Recurse unsigned | Format-Table FullName, Length
+
+      # SignPath holt das Artefakt direkt von GitHub und prueft dabei, dass es aus diesem Workflow stammt.
+      - name: Upload unsigned binaries
+        id: upload-unsigned
+        uses: actions/upload-artifact@v5
+        with:
+          name: unsigned-binaries
+          path: unsigned/
+          if-no-files-found: error
+
+      - name: Sign with SignPath
+        if: startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: '${{ vars.SIGNPATH_PROJECT_SLUG }}'
+          signing-policy-slug: '${{ vars.SIGNPATH_POLICY_SLUG }}'
+          github-artifact-id: '${{ steps.upload-unsigned.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { "dev-$($env:GITHUB_SHA.Substring(0,7))" }
+          $src = 'unsigned'
+          if (Test-Path signed) {
+            # Falls SignPath ein ZIP liefert: entpacken
+            Get-ChildItem signed -Filter *.zip | ForEach-Object { Expand-Archive $_.FullName signed -Force }
+            $src = 'signed'
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($arch in 'arm64', 'x64') {
+            $bin = Get-ChildItem -Recurse $src -Filter wgas.exe | Where-Object { $_.Directory.Name -eq $arch } | Select-Object -First 1
+            if (-not $bin) { throw "wgas.exe fuer $arch fehlt in $src" }
+            if ($src -eq 'signed') {
+              foreach ($exe in 'wgas.exe', 'wgas-gui.exe') {
+                $sig = Get-AuthenticodeSignature (Join-Path $bin.DirectoryName $exe)
+                if ($sig.Status -ne 'Valid') { throw "$arch/$exe ist nicht gueltig signiert: $($sig.Status)" }
+              }
+            }
+            $dir = "dist/wg-autoswitch-$version-$arch"
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            Copy-Item (Join-Path $bin.DirectoryName 'wgas.exe'), (Join-Path $bin.DirectoryName 'wgas-gui.exe') $dir
+            Copy-Item README.md, config.example.ini $dir
+            Get-ChildItem -Filter 'LICENSE*' | Copy-Item -Destination $dir
+            Compress-Archive "$dir/*" "dist/wg-autoswitch-$version-windows-$arch.zip" -Force
+            Remove-Item -Recurse $dir
+          }
+          Get-FileHash dist/*.zip -Algorithm SHA256 |
+            ForEach-Object { '{0}  {1}' -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          Get-Content dist/SHA256SUMS.txt
+          "Signiert: $($src -eq 'signed')" | Out-Host
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v5
+        with:
+          name: packages
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: packages
+          path: dist
+
+      # Nur ein Entwurf: Beschreibung pruefen und auf GitHub von Hand veroeffentlichen.
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "WG-AutoSwitch ${GITHUB_REF_NAME#v}" \
+            --generate-notes

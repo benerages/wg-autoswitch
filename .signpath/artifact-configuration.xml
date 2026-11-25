@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Artefakt-Konfiguration fuer SignPath (im SignPath-Projekt unter "Artifact Configurations" einfuegen).
+     Das GitHub-Artefakt "unsigned-binaries" ist ein ZIP mit den Ordnern arm64/ und x64/. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="arm64/wgas.exe"><authenticode-sign /></pe-file>
+    <pe-file path="arm64/wgas-gui.exe"><authenticode-sign /></pe-file>
+    <pe-file path="x64/wgas.exe"><authenticode-sign /></pe-file>
+    <pe-file path="x64/wgas-gui.exe"><authenticode-sign /></pe-file>
+  </zip-file>
+</artifact-configuration>

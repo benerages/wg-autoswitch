@@ -63,10 +63,10 @@ wchar_t* NextField(wchar_t*& p) {
 
 const wchar_t* KindName(IfKind k) {
     switch (k) {
-    case IfKind::Ethernet: return L"LAN";
-    case IfKind::Wifi:     return L"WLAN";
-    case IfKind::Mobile:   return L"Mobilfunk";
-    default:               return L"Andere";
+    case IfKind::Ethernet: return T(L"LAN");
+    case IfKind::Wifi:     return T(L"WLAN");
+    case IfKind::Mobile:   return T(L"Mobilfunk");
+    default:               return T(L"Andere");
     }
 }
 
@@ -81,11 +81,11 @@ const wchar_t* KindKey(IfKind k) {
 
 const wchar_t* ConnName(Connectivity c) {
     switch (c) {
-    case Connectivity::None:        return L"keine";
-    case Connectivity::Local:       return L"nur lokal";
-    case Connectivity::Constrained: return L"eingeschraenkt (Captive Portal)";
+    case Connectivity::None:        return T(L"keine");
+    case Connectivity::Local:       return T(L"nur lokal");
+    case Connectivity::Constrained: return T(L"eingeschraenkt (Captive Portal)");
     case Connectivity::Internet:    return L"Internet";
-    default:                        return L"unbekannt";
+    default:                        return T(L"unbekannt");
     }
 }
 
@@ -98,7 +98,7 @@ bool ParseKind(const wchar_t* s, IfKind& k) {
 }
 
 const wchar_t* TunnelLabel(const Config& c, int idx) {
-    return (idx >= 0 && idx < c.tunnelCount) ? c.tunnels[idx] : L"kein Tunnel";
+    return (idx >= 0 && idx < c.tunnelCount) ? c.tunnels[idx] : T(L"kein Tunnel");
 }
 
 bool FileExists(const wchar_t* path) {
@@ -187,7 +187,7 @@ wchar_t g_sec[16384];
 bool LoadSection(const wchar_t* path, const wchar_t* sec, wchar_t* err, size_t errCap) {
     const DWORD n = GetPrivateProfileSectionW(sec, g_sec, static_cast<DWORD>(_countof(g_sec)), path);
     if (n >= _countof(g_sec) - 2) {
-        swprintf_s(err, errCap, L"Sektion [%ls] ist zu gross.", sec);
+        swprintf_s(err, errCap, T(L"Sektion [%ls] ist zu gross."), sec);
         return false;
     }
     if (n == 0) g_sec[0] = g_sec[1] = 0;
@@ -215,7 +215,7 @@ bool CheckKeys(const wchar_t* sec, const wchar_t* const* allowed, int nAllowed, 
         bool known = false;
         for (int i = 0; i < nAllowed; ++i) if (StrIEq(key, allowed[i])) known = true;
         if (!known) {
-            swprintf_s(err, errCap, L"Unbekannter Schluessel \"%ls\" in [%ls].", key, sec);
+            swprintf_s(err, errCap, T(L"Unbekannter Schluessel \"%ls\" in [%ls]."), key, sec);
             return false;
         }
     }
@@ -259,8 +259,8 @@ bool LoadConfig(const wchar_t* path, Config& c, wchar_t* err, size_t errCap) {
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) {
         const DWORD e = GetLastError();
-        if (e == ERROR_ACCESS_DENIED) swprintf_s(err, errCap, L"Kein Lesezugriff auf %ls (als Administrator ausfuehren).", path);
-        else swprintf_s(err, errCap, L"%ls nicht gefunden (Fehler %lu).", path, e);
+        if (e == ERROR_ACCESS_DENIED) swprintf_s(err, errCap, T(L"Kein Lesezugriff auf %ls (als Administrator ausfuehren)."), path);
+        else swprintf_s(err, errCap, T(L"%ls nicht gefunden (Fehler %lu)."), path, e);
         return false;
     }
     CloseHandle(f);
@@ -272,40 +272,40 @@ bool LoadConfig(const wchar_t* path, Config& c, wchar_t* err, size_t errCap) {
     wchar_t v[kDnsLen];
     int r = ReadKey(L"default_tunnel", v, kNameLen);
     if (r != 1 || !IsValidTunnelName(v)) {
-        swprintf_s(err, errCap, L"[general] default_tunnel fehlt oder ist ungueltig (A-Z a-z 0-9 _ = + . -, max. 32 Zeichen, nicht \"none\").");
+        swprintf_s(err, errCap, T(L"[general] default_tunnel fehlt oder ist ungueltig (A-Z a-z 0-9 _ = + . -, max. 32 Zeichen, nicht \"none\")."));
         return false;
     }
     c.defaultTunnel = AddTunnel(c, v);
     if ((r = ReadKey(L"debounce_ms", v, 16)) != 0) {
         unsigned ms = 0;
         if (r < 0 || !ParseUInt(v, ms) || ms < 500 || ms > 10000) {
-            swprintf_s(err, errCap, L"[general] debounce_ms muss zwischen 500 und 10000 liegen.");
+            swprintf_s(err, errCap, T(L"[general] debounce_ms muss zwischen 500 und 10000 liegen."));
             return false;
         }
         c.debounceMs = ms;
     }
     if ((r = ReadKey(L"no_network", v, 8)) != 0) {
         if (r > 0 && StrIEq(v, L"on")) c.noNetworkOn = true;
-        else if (r < 0 || !StrIEq(v, L"off")) { swprintf_s(err, errCap, L"[general] no_network: on oder off."); return false; }
+        else if (r < 0 || !StrIEq(v, L"off")) { swprintf_s(err, errCap, T(L"[general] no_network: on oder off.")); return false; }
     }
     if ((r = ReadKey(L"captive_portal", v, 8)) != 0) {
         if (r > 0 && StrIEq(v, L"ignore")) c.captiveWait = false;
-        else if (r < 0 || !StrIEq(v, L"wait")) { swprintf_s(err, errCap, L"[general] captive_portal: wait oder ignore."); return false; }
+        else if (r < 0 || !StrIEq(v, L"wait")) { swprintf_s(err, errCap, T(L"[general] captive_portal: wait oder ignore.")); return false; }
     }
 
     static wchar_t names[8192];
     const DWORD n = GetPrivateProfileSectionNamesW(names, static_cast<DWORD>(_countof(names)), path);
-    if (n >= _countof(names) - 2) { swprintf_s(err, errCap, L"Zu viele Sektionen."); return false; }
+    if (n >= _countof(names) - 2) { swprintf_s(err, errCap, T(L"Zu viele Sektionen.")); return false; }
 
     for (const wchar_t* sec = names; *sec; sec += wcslen(sec) + 1) {
         if (StrIEq(sec, L"general")) continue;
         if (!StartsWithI(sec, L"network.")) {
-            swprintf_s(err, errCap, L"Unbekannte Sektion [%ls] (erlaubt: [general], [network.<name>]).", sec);
+            swprintf_s(err, errCap, T(L"Unbekannte Sektion [%ls] (erlaubt: [general], [network.<name>])."), sec);
             return false;
         }
         const wchar_t* rname = sec + 8;
-        if (!IsValidRuleName(rname)) { swprintf_s(err, errCap, L"Ungueltiger Regelname [%ls].", sec); return false; }
-        if (c.ruleCount >= kMaxRules) { swprintf_s(err, errCap, L"Mehr als %d Regeln.", kMaxRules); return false; }
+        if (!IsValidRuleName(rname)) { swprintf_s(err, errCap, T(L"Ungueltiger Regelname [%ls]."), sec); return false; }
+        if (c.ruleCount >= kMaxRules) { swprintf_s(err, errCap, T(L"Mehr als %d Regeln."), kMaxRules); return false; }
         if (!LoadSection(path, sec, err, errCap) || !CheckKeys(sec, kRuleKeys, 6, err, errCap)) return false;
 
         Rule& rule = c.rules[c.ruleCount];
@@ -314,50 +314,50 @@ bool LoadConfig(const wchar_t* path, Config& c, wchar_t* err, size_t errCap) {
         rule.tunnel = kNoTunnel;
 
         if ((r = ReadKey(L"type", v, 16)) != 0) {
-            if (r < 0 || !ParseKind(v, rule.kind)) { swprintf_s(err, errCap, L"[%ls] type: ethernet, wifi, mobile oder other.", sec); return false; }
+            if (r < 0 || !ParseKind(v, rule.kind)) { swprintf_s(err, errCap, T(L"[%ls] type: ethernet, wifi, mobile oder other."), sec); return false; }
             rule.hasKind = true;
         }
         if ((r = ReadKey(L"gateway_mac", v, 32)) != 0) {
             if (r < 0 || !ParseMac(v, rule.gwMac) || MacIsZero(rule.gwMac)) {
-                swprintf_s(err, errCap, L"[%ls] gateway_mac: Format 00:11:22:33:44:55.", sec);
+                swprintf_s(err, errCap, T(L"[%ls] gateway_mac: Format 00:11:22:33:44:55."), sec);
                 return false;
             }
             rule.hasMac = true;
         }
         if ((r = ReadKey(L"bssid", v, 32)) != 0) {
             if (r < 0 || !ParseMac(v, rule.bssid) || MacIsZero(rule.bssid)) {
-                swprintf_s(err, errCap, L"[%ls] bssid: Format 00:11:22:33:44:55.", sec);
+                swprintf_s(err, errCap, T(L"[%ls] bssid: Format 00:11:22:33:44:55."), sec);
                 return false;
             }
             rule.hasBssid = true;
         }
         r = ReadKey(L"dns_suffix", v, kDnsLen);
         if (r < 0 || (r > 0 && v[0])) {
-            if (r < 0 || !IsValidDnsSuffix(v)) { swprintf_s(err, errCap, L"[%ls] dns_suffix ungueltig (A-Z a-z 0-9 . -).", sec); return false; }
+            if (r < 0 || !IsValidDnsSuffix(v)) { swprintf_s(err, errCap, T(L"[%ls] dns_suffix ungueltig (A-Z a-z 0-9 . -)."), sec); return false; }
             StrCopy(rule.dnsSuffix, kDnsLen, v);
             rule.hasDns = true;
         }
         r = ReadKey(L"ssid", v, kSsidLen);
         if (r < 0 || (r > 0 && v[0])) {
             const int utf8 = r > 0 ? WideCharToMultiByte(CP_UTF8, 0, v, -1, nullptr, 0, nullptr, nullptr) : 0;
-            if (r < 0 || utf8 <= 1 || utf8 - 1 > 32) { swprintf_s(err, errCap, L"[%ls] ssid: 1-32 Byte.", sec); return false; }
+            if (r < 0 || utf8 <= 1 || utf8 - 1 > 32) { swprintf_s(err, errCap, T(L"[%ls] ssid: 1-32 Byte."), sec); return false; }
             StrCopy(rule.ssid, kSsidLen, v);
             rule.hasSsid = true;
         }
         if (ReadKey(L"tunnel", v, kNameLen) != 1) {
-            swprintf_s(err, errCap, L"[%ls] tunnel fehlt (Tunnelname oder none).", sec);
+            swprintf_s(err, errCap, T(L"[%ls] tunnel fehlt (Tunnelname oder none)."), sec);
             return false;
         }
         if (!StrIEq(v, L"none")) {
-            if (!IsValidTunnelName(v)) { swprintf_s(err, errCap, L"[%ls] tunnel: ungueltiger Name.", sec); return false; }
+            if (!IsValidTunnelName(v)) { swprintf_s(err, errCap, T(L"[%ls] tunnel: ungueltiger Name."), sec); return false; }
             rule.tunnel = AddTunnel(c, v);
-            if (rule.tunnel < 0) { swprintf_s(err, errCap, L"Mehr als %d Tunnel.", kMaxTunnels); return false; }
+            if (rule.tunnel < 0) { swprintf_s(err, errCap, T(L"Mehr als %d Tunnel."), kMaxTunnels); return false; }
         }
         if (!RuleStrongEnough(rule)) {
             swprintf_s(err, errCap,
                        rule.tunnel == kNoTunnel
-                           ? L"[%ls] tunnel = none braucht gateway_mac UND dns_suffix, ssid oder bssid (eine SSID allein ist faelschbar)."
-                           : L"[%ls] braucht mindestens ein Merkmal (type, ssid, bssid, gateway_mac, dns_suffix).",
+                           ? T(L"[%ls] tunnel = none braucht gateway_mac UND dns_suffix, ssid oder bssid (eine SSID allein ist faelschbar).")
+                           : T(L"[%ls] braucht mindestens ein Merkmal (type, ssid, bssid, gateway_mac, dns_suffix)."),
                        sec);
             return false;
         }
@@ -390,13 +390,7 @@ bool WriteConfigText(const Config& c, wchar_t* out, size_t cap) {
     out[0] = 0;
     if (c.defaultTunnel < 0 || c.defaultTunnel >= c.tunnelCount) return false;
     Appendf(out, cap,
-            L"; WG-AutoSwitch - Konfiguration (geschrieben von WG-AutoSwitch)\r\n"
-            L"; Merkmale des aktuellen Netzes: wgas check   Uebernehmen: wgas reload\r\n\r\n"
-            L"[general]\r\n"
-            L"default_tunnel = %ls\r\n"
-            L"debounce_ms = %u\r\n"
-            L"no_network = %ls\r\n"
-            L"captive_portal = %ls\r\n",
+            L"; WG-AutoSwitch configuration (written by WG-AutoSwitch)\r\n; Features of the current network: wgas check   Apply: wgas reload\r\n\r\n[general]\r\ndefault_tunnel = %ls\r\ndebounce_ms = %u\r\nno_network = %ls\r\ncaptive_portal = %ls\r\n",
             c.tunnels[c.defaultTunnel], c.debounceMs, c.noNetworkOn ? L"on" : L"off",
             c.captiveWait ? L"wait" : L"ignore");
     for (int i = 0; i < c.ruleCount; ++i) {
@@ -469,7 +463,7 @@ bool IsSecureObject(const wchar_t* path) {
 
 bool ConfigIsSecure(const Paths& p, wchar_t* err, size_t errCap) {
     if (!IsSecureObject(p.dataDir) || !IsSecureObject(p.cfg)) {
-        swprintf_s(err, errCap, L"Unsichere Dateirechte auf %ls (andere als SYSTEM/Administratoren duerfen schreiben). \"wgas reload\" korrigiert das.", p.cfg);
+        swprintf_s(err, errCap, T(L"Unsichere Dateirechte auf %ls (andere als SYSTEM/Administratoren duerfen schreiben). \"wgas reload\" korrigiert das."), p.cfg);
         return false;
     }
     return true;

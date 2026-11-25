@@ -54,7 +54,8 @@ enum : int {
 };
 enum : UINT {
     ID_TRAY_OPEN = 1000, ID_TRAY_DISCONNECT, ID_TRAY_AUTO, ID_TRAY_PAUSE15, ID_TRAY_PAUSE60, ID_TRAY_PAUSE480,
-    ID_TRAY_RESUME, ID_TRAY_AUTOSTART, ID_TRAY_EXIT, ID_TRAY_TUNNEL0 = 1100,
+    ID_TRAY_RESUME, ID_TRAY_AUTOSTART, ID_TRAY_EXIT, ID_TRAY_LANG_AUTO, ID_TRAY_LANG_DE, ID_TRAY_LANG_EN,
+    ID_TRAY_TUNNEL0 = 1100,
 };
 
 // =====================================================================================
@@ -106,6 +107,7 @@ NOTIFYICONDATAW g_nid;
 UINT      g_taskbarCreated;
 HANDLE    g_stateEv;
 int       g_page;       // 0 Tunnel, 1 Auto-Tunneling
+HANDLE    g_mutex;      // Einzelinstanz; beim Sprachwechsel vor dem Neustart freigegeben
 
 int S(int v) { return MulDiv(v, g_dpi, 96); }
 
@@ -315,7 +317,7 @@ bool RunElevated(HWND owner, const wchar_t* exe, const wchar_t* params, int show
     sei.lpParameters = params;
     sei.nShow = show;
     if (!ShellExecuteExW(&sei)) {
-        if (GetLastError() != ERROR_CANCELLED) Msg(owner, L"Die Aktion konnte nicht mit Adminrechten gestartet werden.", MB_ICONERROR);
+        if (GetLastError() != ERROR_CANCELLED) Msg(owner, T(L"Die Aktion konnte nicht mit Adminrechten gestartet werden."), MB_ICONERROR);
         return false;
     }
     if (!sei.hProcess) return true;
@@ -335,7 +337,7 @@ bool RunElevated(HWND owner, const wchar_t* exe, const wchar_t* params, int show
 void RunWgasElevated(HWND owner, const wchar_t* params, Op op = Op::Generic, const wchar_t* tmp = nullptr) {
     wchar_t exe[MAX_PATH], full[1024];
     WgasExe(exe, MAX_PATH);
-    if (!FileExists(exe)) { Msg(owner, L"wgas.exe wurde nicht gefunden (gehört in denselben Ordner wie wgas-gui.exe).", MB_ICONERROR); return; }
+    if (!FileExists(exe)) { Msg(owner, T(L"wgas.exe wurde nicht gefunden (gehört in denselben Ordner wie wgas-gui.exe)."), MB_ICONERROR); return; }
     swprintf_s(full, _countof(full), L"--gui %ls", params);
     RunElevated(owner, exe, full, SW_HIDE, op, tmp);
 }
@@ -458,7 +460,7 @@ DWORD SendCommand(const wchar_t* req) {
     wchar_t rsp[512];
     const DWORD e = PipeTransact(req, rsp, _countof(rsp));
     if (e != NO_ERROR) {
-        Msg(g_main, L"Der Dienst WG-AutoSwitch ist nicht erreichbar.", MB_ICONERROR);
+        Msg(g_main, T(L"Der Dienst WG-AutoSwitch ist nicht erreichbar."), MB_ICONERROR);
         return e;
     }
     if (StartsWithI(rsp, L"ERR\t")) { Msg(g_main, rsp + 4, MB_ICONERROR); return ERROR_INVALID_FUNCTION; }
@@ -476,15 +478,15 @@ void UpdateTray(DWORD action) {
     wchar_t tip[128];
     if (!g_m.connected) {
         icon = 3;
-        swprintf_s(tip, _countof(tip), L"%ls – Dienst nicht erreichbar", kTitle);
+        swprintf_s(tip, _countof(tip), T(L"%ls – Dienst nicht erreichbar"), kTitle);
     } else {
         const bool running = AnyRunning();
         const bool special = !StrEq(g_m.mode, L"auto") || g_m.captive;
         icon = running ? 1 : special ? 2 : 0;
-        const wchar_t* modeText = StrEq(g_m.mode, L"paused") ? L" (pausiert)"
-                                : StrEq(g_m.mode, L"manual") ? L" (manuell)"
-                                : g_m.captive ? L" (Captive Portal)" : L"";
-        swprintf_s(tip, _countof(tip), L"%ls – %ls%ls", kTitle, g_m.target[0] ? g_m.target : L"kein Tunnel", modeText);
+        const wchar_t* modeText = StrEq(g_m.mode, L"paused") ? T(L" (pausiert)")
+                                : StrEq(g_m.mode, L"manual") ? T(L" (manuell)")
+                                : g_m.captive ? T(L" (Captive Portal)") : L"";
+        swprintf_s(tip, _countof(tip), L"%ls – %ls%ls", kTitle, g_m.target[0] ? g_m.target : T(L"kein Tunnel"), modeText);
     }
     g_nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE | NIF_SHOWTIP;
     g_nid.hIcon = g_icons[icon];
@@ -521,24 +523,31 @@ void TrayMenu() {
             const bool on = t.state == static_cast<int>(TState::Running);
             AppendMenuW(menu, MF_STRING | (on ? MF_CHECKED : 0), ID_TRAY_TUNNEL0 + static_cast<UINT>(i), t.name);
         }
-        AppendMenuW(menu, MF_STRING | (AnyRunning() ? 0 : MF_GRAYED), ID_TRAY_DISCONNECT, L"Trennen");
+        AppendMenuW(menu, MF_STRING | (AnyRunning() ? 0 : MF_GRAYED), ID_TRAY_DISCONNECT, T(L"Trennen"));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         if (!StrEq(g_m.mode, L"auto"))
-            AppendMenuW(menu, MF_STRING, StrEq(g_m.mode, L"paused") ? ID_TRAY_RESUME : ID_TRAY_AUTO, L"Automatik fortsetzen");
-        AppendMenuW(pause, MF_STRING, ID_TRAY_PAUSE15, L"15 Minuten");
-        AppendMenuW(pause, MF_STRING, ID_TRAY_PAUSE60, L"1 Stunde");
-        AppendMenuW(pause, MF_STRING, ID_TRAY_PAUSE480, L"8 Stunden");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(pause), L"Automatik pausieren");
+            AppendMenuW(menu, MF_STRING, StrEq(g_m.mode, L"paused") ? ID_TRAY_RESUME : ID_TRAY_AUTO, T(L"Automatik fortsetzen"));
+        AppendMenuW(pause, MF_STRING, ID_TRAY_PAUSE15, T(L"15 Minuten"));
+        AppendMenuW(pause, MF_STRING, ID_TRAY_PAUSE60, T(L"1 Stunde"));
+        AppendMenuW(pause, MF_STRING, ID_TRAY_PAUSE480, T(L"8 Stunden"));
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(pause), T(L"Automatik pausieren"));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     } else {
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"Dienst nicht erreichbar");
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, T(L"Dienst nicht erreichbar"));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         DestroyMenu(pause);
         pause = nullptr;
     }
-    AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN, L"Öffnen");
-    AppendMenuW(menu, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_TRAY_AUTOSTART, L"Beim Anmelden starten");
-    AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Beenden");
+    // Sprache: zweisprachig beschriftet, damit man sie auch in der falschen Sprache findet.
+    HMENU lang = CreatePopupMenu();
+    const wchar_t* ov = LanguageOverride();
+    AppendMenuW(lang, MF_STRING | (!ov ? MF_CHECKED : 0), ID_TRAY_LANG_AUTO, T(L"Automatisch (Windows)"));
+    AppendMenuW(lang, MF_STRING | (ov && StrIEq(ov, L"de") ? MF_CHECKED : 0), ID_TRAY_LANG_DE, L"Deutsch");
+    AppendMenuW(lang, MF_STRING | (ov && StrIEq(ov, L"en") ? MF_CHECKED : 0), ID_TRAY_LANG_EN, L"English");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(lang), CurrentLanguage() == Lang::De ? L"Sprache / Language" : L"Language / Sprache");
+    AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN, T(L"Öffnen"));
+    AppendMenuW(menu, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_TRAY_AUTOSTART, T(L"Beim Anmelden starten"));
+    AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, T(L"Beenden"));
     SetMenuDefaultItem(menu, ID_TRAY_OPEN, FALSE);
 
     POINT pt;
@@ -633,12 +642,12 @@ bool RuleFormOk(Form& f) {
     wchar_t v[kDnsLen];
     HWND h = f.hwnd;
     if (!GetText(GetDlgItem(h, IDC_F_NAME), v, kRuleLen) || !IsValidRuleName(v)) {
-        Msg(h, L"Name: 1–47 Zeichen aus A–Z, a–z, 0–9, _ . -", MB_ICONWARNING);
+        Msg(h, T(L"Name: 1–47 Zeichen aus A–Z, a–z, 0–9, _ . -"), MB_ICONWARNING);
         return false;
     }
     for (int i = 0; i < rf.cfg->ruleCount; ++i)
         if (i != rf.editIndex && StrIEq(rf.cfg->rules[i].name, v)) {
-            Msg(h, L"Es gibt bereits eine Regel mit diesem Namen.", MB_ICONWARNING);
+            Msg(h, T(L"Es gibt bereits eine Regel mit diesem Namen."), MB_ICONWARNING);
             return false;
         }
     StrCopy(r.name, kRuleLen, v);
@@ -646,20 +655,20 @@ bool RuleFormOk(Form& f) {
     if (type >= 1 && type <= 4) { r.hasKind = true; r.kind = kKinds[type - 1]; }
     if (GetText(GetDlgItem(h, IDC_F_SSID), v, kDnsLen)) {
         const int utf8 = WideCharToMultiByte(CP_UTF8, 0, v, -1, nullptr, 0, nullptr, nullptr);
-        if (utf8 - 1 > 32 || wcschr(v, L'"')) { Msg(h, L"SSID: höchstens 32 Byte, ohne Anführungszeichen.", MB_ICONWARNING); return false; }
+        if (utf8 - 1 > 32 || wcschr(v, L'"')) { Msg(h, T(L"SSID: höchstens 32 Byte, ohne Anführungszeichen."), MB_ICONWARNING); return false; }
         r.hasSsid = true;
         StrCopy(r.ssid, kSsidLen, v);
     }
     if (GetText(GetDlgItem(h, IDC_F_BSSID), v, kDnsLen)) {
-        if (!ParseMac(v, r.bssid) || MacIsZero(r.bssid)) { Msg(h, L"BSSID: Format aa:bb:cc:dd:ee:ff", MB_ICONWARNING); return false; }
+        if (!ParseMac(v, r.bssid) || MacIsZero(r.bssid)) { Msg(h, T(L"BSSID: Format aa:bb:cc:dd:ee:ff"), MB_ICONWARNING); return false; }
         r.hasBssid = true;
     }
     if (GetText(GetDlgItem(h, IDC_F_MAC), v, kDnsLen)) {
-        if (!ParseMac(v, r.gwMac) || MacIsZero(r.gwMac)) { Msg(h, L"Gateway-MAC: Format aa:bb:cc:dd:ee:ff", MB_ICONWARNING); return false; }
+        if (!ParseMac(v, r.gwMac) || MacIsZero(r.gwMac)) { Msg(h, T(L"Gateway-MAC: Format aa:bb:cc:dd:ee:ff"), MB_ICONWARNING); return false; }
         r.hasMac = true;
     }
     if (GetText(GetDlgItem(h, IDC_F_DNS), v, kDnsLen)) {
-        if (!IsValidDnsSuffix(v)) { Msg(h, L"DNS-Suffix: nur A–Z, a–z, 0–9, Punkt und Bindestrich.", MB_ICONWARNING); return false; }
+        if (!IsValidDnsSuffix(v)) { Msg(h, T(L"DNS-Suffix: nur A–Z, a–z, 0–9, Punkt und Bindestrich."), MB_ICONWARNING); return false; }
         r.hasDns = true;
         StrCopy(r.dnsSuffix, kDnsLen, v);
     }
@@ -670,13 +679,12 @@ bool RuleFormOk(Form& f) {
         wchar_t name[kNameLen];
         SendMessageW(GetDlgItem(h, IDC_F_TUNNEL), CB_GETLBTEXT, static_cast<WPARAM>(sel), reinterpret_cast<LPARAM>(name));
         r.tunnel = AddTunnel(*rf.cfg, name);
-        if (r.tunnel < 0) { Msg(h, L"Zu viele Tunnel.", MB_ICONWARNING); return false; }
+        if (r.tunnel < 0) { Msg(h, T(L"Zu viele Tunnel."), MB_ICONWARNING); return false; }
     }
     if (!RuleStrongEnough(r)) {
         Msg(h, r.tunnel == kNoTunnel
-                   ? L"Ein vertrautes Netz (kein Tunnel) braucht die Gateway-MAC und zusätzlich "
-                     L"DNS-Suffix, SSID oder BSSID.\n\nEin WLAN-Name allein kann von jedem nachgeahmt werden."
-                   : L"Bitte mindestens ein Merkmal angeben.",
+                   ? T(L"Ein vertrautes Netz (kein Tunnel) braucht die Gateway-MAC und zusätzlich DNS-Suffix, SSID oder BSSID.\n\nEin WLAN-Name allein kann von jedem nachgeahmt werden.")
+                   : T(L"Bitte mindestens ein Merkmal angeben."),
             MB_ICONWARNING);
         return false;
     }
@@ -691,12 +699,12 @@ bool EditRule(HWND owner, Rule& r, Config& cfg, int editIndex) {
     RuleForm rf = { &r, &cfg, editIndex };
     f.onOk = RuleFormOk;
     f.data = &rf;
-    if (!CreateForm(f, owner, editIndex < 0 ? L"Neue Regel" : L"Regel bearbeiten", 460, 380)) return false;
+    if (!CreateForm(f, owner, editIndex < 0 ? T(L"Neue Regel") : T(L"Regel bearbeiten"), 460, 380)) return false;
     HWND h = f.hwnd;
     struct Row { const wchar_t* label; int id; };
-    const Row rows[] = { { L"Name:", IDC_F_NAME }, { L"Netztyp:", IDC_F_TYPE }, { L"WLAN-Name (SSID):", IDC_F_SSID },
-                         { L"Access Point (BSSID):", IDC_F_BSSID }, { L"Gateway-MAC:", IDC_F_MAC },
-                         { L"DNS-Suffix:", IDC_F_DNS }, { L"Tunnel:", IDC_F_TUNNEL } };
+    const Row rows[] = { { T(L"Name:"), IDC_F_NAME }, { T(L"Netztyp:"), IDC_F_TYPE }, { T(L"WLAN-Name (SSID):"), IDC_F_SSID },
+                         { T(L"Access Point (BSSID):"), IDC_F_BSSID }, { T(L"Gateway-MAC:"), IDC_F_MAC },
+                         { T(L"DNS-Suffix:"), IDC_F_DNS }, { T(L"Tunnel:"), IDC_F_TUNNEL } };
     int y = 12;
     for (const Row& row : rows) {
         HWND lbl = Ctl(h, L"STATIC", row.label, SS_LEFT, -1);
@@ -712,19 +720,18 @@ bool EditRule(HWND owner, Rule& r, Config& cfg, int editIndex) {
         y += 34;
     }
     HWND hint = Ctl(h, L"STATIC",
-                    L"Alle angegebenen Merkmale müssen passen. «Kein Tunnel» (vertrautes Netz) verlangt die "
-                    L"Gateway-MAC plus DNS-Suffix, SSID oder BSSID. Die BSSID bindet an einen einzelnen Access Point.",
+                    T(L"Alle angegebenen Merkmale müssen passen. «Kein Tunnel» (vertrautes Netz) verlangt die Gateway-MAC plus DNS-Suffix, SSID oder BSSID. Die BSSID bindet an einen einzelnen Access Point."),
                     SS_LEFT, IDC_F_HINT);
     MoveWindow(hint, S(12), S(y), S(434), S(52), FALSE);
     HWND ok = Ctl(h, WC_BUTTONW, L"OK", BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK);
-    HWND cancel = Ctl(h, WC_BUTTONW, L"Abbrechen", BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL);
+    HWND cancel = Ctl(h, WC_BUTTONW, T(L"Abbrechen"), BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL);
     MoveWindow(ok, S(256), S(340), S(92), S(28), FALSE);
     MoveWindow(cancel, S(354), S(340), S(92), S(28), FALSE);
 
     // Werte eintragen
     SetWindowTextW(GetDlgItem(h, IDC_F_NAME), r.name);
     HWND type = GetDlgItem(h, IDC_F_TYPE);
-    const wchar_t* types[] = { L"(beliebig)", L"LAN", L"WLAN", L"Mobilfunk", L"Andere" };
+    const wchar_t* types[] = { T(L"(beliebig)"), T(L"LAN"), T(L"WLAN"), T(L"Mobilfunk"), T(L"Andere") };
     for (const wchar_t* t : types) SendMessageW(type, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t));
     int typeSel = 0;
     if (r.hasKind) for (int i = 0; i < 4; ++i) if (kKinds[i] == r.kind) typeSel = i + 1;
@@ -735,7 +742,7 @@ bool EditRule(HWND owner, Rule& r, Config& cfg, int editIndex) {
     if (r.hasMac) { MacToStr(r.gwMac, mac, _countof(mac)); SetWindowTextW(GetDlgItem(h, IDC_F_MAC), mac); }
     if (r.hasDns) SetWindowTextW(GetDlgItem(h, IDC_F_DNS), r.dnsSuffix);
     HWND tun = GetDlgItem(h, IDC_F_TUNNEL);
-    SendMessageW(tun, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Kein Tunnel (vertrautes Netz)"));
+    SendMessageW(tun, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(T(L"Kein Tunnel (vertrautes Netz)")));
     int tunSel = 0, idx = 1;
     // Installierte Tunnel + in der Konfiguration genannte
     KnownTunnels names;
@@ -785,18 +792,18 @@ bool TunnelFormOk(Form& f) {
     HWND h = f.hwnd;
     wchar_t name[64];
     if (!GetText(GetDlgItem(h, IDC_F_NAME), name, _countof(name)) || !IsValidTunnelName(name)) {
-        Msg(h, L"Tunnelname: 1–32 Zeichen aus A–Z, a–z, 0–9, _ = + . -", MB_ICONWARNING);
+        Msg(h, T(L"Tunnelname: 1–32 Zeichen aus A–Z, a–z, 0–9, _ = + . -"), MB_ICONWARNING);
         return false;
     }
     HWND edit = GetDlgItem(h, IDC_F_TEXT);
     const int len = GetWindowTextLengthW(edit);
-    if (len <= 0 || len > 60000) { Msg(h, L"Die Konfiguration ist leer oder zu gross.", MB_ICONWARNING); return false; }
+    if (len <= 0 || len > 60000) { Msg(h, T(L"Die Konfiguration ist leer oder zu gross."), MB_ICONWARNING); return false; }
 
     if (tf.isNew) {
         SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
         const bool exists = scm && QueryTunnel(scm, name) != TState::Missing;
         if (scm) CloseServiceHandle(scm);
-        if (exists && MessageBoxW(h, L"Ein Tunnel mit diesem Namen existiert bereits. Ersetzen?", kTitle,
+        if (exists && MessageBoxW(h, T(L"Ein Tunnel mit diesem Namen existiert bereits. Ersetzen?"), kTitle,
                                   MB_YESNO | MB_ICONQUESTION) != IDYES)
             return false;
     }
@@ -842,11 +849,11 @@ bool TunnelFormOk(Form& f) {
                 CloseHandle(pi.hProcess);
                 ok = code == 0;   // Fehlermeldungen zeigt wgas.exe selbst an
             } else {
-                Msg(h, L"wgas.exe konnte nicht gestartet werden.", MB_ICONERROR);
+                Msg(h, T(L"wgas.exe konnte nicht gestartet werden."), MB_ICONERROR);
             }
             SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         } else {
-            Msg(h, L"Die Arbeitskopie konnte nicht geschrieben werden.", MB_ICONERROR);
+            Msg(h, T(L"Die Arbeitskopie konnte nicht geschrieben werden."), MB_ICONERROR);
         }
         SecureDelete(path);
     }
@@ -859,7 +866,7 @@ bool TunnelFormOk(Form& f) {
         CloseClipboard();
     }
     if (tf.sourceFile[0] &&
-        MessageBoxW(h, L"Tunnel importiert.\n\nDie Quelldatei enthält den privaten Schlüssel. Jetzt löschen?", kTitle,
+        MessageBoxW(h, T(L"Tunnel importiert.\n\nDie Quelldatei enthält den privaten Schlüssel. Jetzt löschen?"), kTitle,
                     MB_YESNO | MB_ICONQUESTION) == IDYES)
         SecureDelete(tf.sourceFile);
     return true;
@@ -929,7 +936,7 @@ void SuggestName(const wchar_t* path, wchar_t* out) {
 }
 
 int RunTunnelEditor(const wchar_t* mode, const wchar_t* arg) {
-    if (!IsElevatedAdmin()) { Msg(nullptr, L"Der Tunnel-Editor braucht Adminrechte.", MB_ICONERROR); return 1; }
+    if (!IsElevatedAdmin()) { Msg(nullptr, T(L"Der Tunnel-Editor braucht Adminrechte."), MB_ICONERROR); return 1; }
     TunnelForm tf;
     ZeroBytes(&tf, sizeof tf);
     wchar_t name[kNameLen] = L"";
@@ -942,7 +949,7 @@ int RunTunnelEditor(const wchar_t* mode, const wchar_t* arg) {
         wchar_t path[MAX_PATH];
         swprintf_s(path, _countof(path), L"%ls\\%ls.conf", g_paths.tunDir, arg);
         text = ReadTextFile(path);
-        if (!text) { Msg(nullptr, L"Die Konfiguration dieses Tunnels liegt nicht im WG-AutoSwitch-Ordner (nicht über WG-AutoSwitch importiert).", MB_ICONERROR); return 1; }
+        if (!text) { Msg(nullptr, T(L"Die Konfiguration dieses Tunnels liegt nicht im WG-AutoSwitch-Ordner (nicht über WG-AutoSwitch importiert)."), MB_ICONERROR); return 1; }
     } else if (StrEq(mode, L"--clip")) {
         tf.isNew = tf.fromClipboard = true;
         if (OpenClipboard(nullptr)) {
@@ -959,8 +966,7 @@ int RunTunnelEditor(const wchar_t* mode, const wchar_t* arg) {
             CloseClipboard();
         }
         if (!text || !wcsstr(text, L"[Interface]")) {
-            Msg(nullptr, L"Die Zwischenablage enthält keine WireGuard-Konfiguration ([Interface] fehlt).\n\n"
-                         L"In OPNsense: VPN › WireGuard › Peer generator, Konfiguration kopieren.", MB_ICONWARNING);
+            Msg(nullptr, T(L"Die Zwischenablage enthält keine WireGuard-Konfiguration ([Interface] fehlt).\n\nIn OPNsense: VPN › WireGuard › Peer generator, Konfiguration kopieren."), MB_ICONWARNING);
             if (text) HeapFree(heap, 0, text);
             return 1;
         }
@@ -969,7 +975,7 @@ int RunTunnelEditor(const wchar_t* mode, const wchar_t* arg) {
         tf.isNew = true;
         if (arg && arg[0]) {
             text = ReadTextFile(arg);
-            if (!text) { Msg(nullptr, L"Die Datei konnte nicht gelesen werden (leer, zu gross oder kein Zugriff).", MB_ICONERROR); return 1; }
+            if (!text) { Msg(nullptr, T(L"Die Datei konnte nicht gelesen werden (leer, zu gross oder kein Zugriff)."), MB_ICONERROR); return 1; }
             StrCopy(tf.sourceFile, MAX_PATH, arg);
             SuggestName(arg, name);
         }
@@ -983,10 +989,10 @@ int RunTunnelEditor(const wchar_t* mode, const wchar_t* arg) {
     f.data = &tf;
     CreateFonts();
     wchar_t title[96];
-    swprintf_s(title, _countof(title), tf.isNew ? L"Tunnel importieren – %ls" : L"Tunnel bearbeiten – %ls", kTitle);
+    swprintf_s(title, _countof(title), tf.isNew ? T(L"Tunnel importieren – %ls") : T(L"Tunnel bearbeiten – %ls"), kTitle);
     if (!CreateForm(f, nullptr, title, 620, 560)) return 1;
     HWND h = f.hwnd;
-    HWND lbl = Ctl(h, L"STATIC", L"Tunnelname:", SS_LEFT, -1);
+    HWND lbl = Ctl(h, L"STATIC", T(L"Tunnelname:"), SS_LEFT, -1);
     MoveWindow(lbl, S(12), S(15), S(100), S(20), FALSE);
     HWND nameEdit = Ctl(h, WC_EDITW, name, ES_AUTOHSCROLL | WS_TABSTOP | (tf.isNew ? 0 : ES_READONLY), IDC_F_NAME, WS_EX_CLIENTEDGE);
     MoveWindow(nameEdit, S(116), S(12), S(250), S(24), FALSE);
@@ -997,12 +1003,11 @@ int RunTunnelEditor(const wchar_t* mode, const wchar_t* arg) {
     MoveWindow(edit, S(12), S(46), S(596), S(420), FALSE);
     if (crlf) { SecureZeroMemory(crlf, wcslen(crlf) * sizeof(wchar_t)); HeapFree(heap, 0, crlf); }
     HWND hint = Ctl(h, L"STATIC",
-                    L"Der Schlüssel wird nur im geschützten Ordner gespeichert (SYSTEM/Administratoren). "
-                    L"Für einen Kill-Switch AllowedIPs = 0.0.0.0/0, ::/0 verwenden.",
+                    T(L"Der Schlüssel wird nur im geschützten Ordner gespeichert (SYSTEM/Administratoren). Für einen Kill-Switch AllowedIPs = 0.0.0.0/0, ::/0 verwenden."),
                     SS_LEFT, IDC_F_HINT);
     MoveWindow(hint, S(12), S(474), S(596), S(36), FALSE);
-    HWND ok = Ctl(h, WC_BUTTONW, L"Speichern", BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK);
-    HWND cancel = Ctl(h, WC_BUTTONW, L"Abbrechen", BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL);
+    HWND ok = Ctl(h, WC_BUTTONW, T(L"Speichern"), BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK);
+    HWND cancel = Ctl(h, WC_BUTTONW, T(L"Abbrechen"), BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL);
     MoveWindow(ok, S(418), S(520), S(92), S(28), FALSE);
     MoveWindow(cancel, S(516), S(520), S(92), S(28), FALSE);
     const bool saved = RunForm(f, nullptr, tf.isNew ? IDC_F_NAME : IDC_F_TEXT);
@@ -1026,10 +1031,10 @@ void SetColumns(HWND lv, const wchar_t* const* titles, const int* widths, int n)
 }
 
 void SetupColumns() {
-    static const wchar_t* const tunCols[] = { L"Tunnel", L"Status", L"Empfangen", L"Gesendet", L"Verwendung" };
+    static const wchar_t* const tunCols[] = { T(L"Tunnel"), T(L"Status"), T(L"Empfangen"), T(L"Gesendet"), T(L"Verwendung") };
     static const int tunW[] = { 150, 110, 100, 100, 230 };
     SetColumns(Item(IDC_TUNLIST), tunCols, tunW, 5);
-    static const wchar_t* const ruleCols[] = { L"Regel", L"Typ", L"SSID", L"BSSID", L"Gateway-MAC", L"DNS-Suffix", L"Tunnel" };
+    static const wchar_t* const ruleCols[] = { T(L"Regel"), T(L"Typ"), L"SSID", L"BSSID", T(L"Gateway-MAC"), T(L"DNS-Suffix"), T(L"Tunnel") };
     static const int ruleW[] = { 110, 70, 110, 120, 120, 100, 110 };
     SetColumns(Item(IDC_RULES), ruleCols, ruleW, 7);
 }
@@ -1062,11 +1067,11 @@ void EnsureRows(HWND lv, int n) {
 
 const wchar_t* StateText(int s) {
     switch (static_cast<TState>(s)) {
-    case TState::Running:      return L"● verbunden";
-    case TState::StartPending: return L"verbindet …";
-    case TState::StopPending:  return L"trennt …";
-    case TState::Stopped:      return L"getrennt";
-    case TState::Missing:      return L"nicht installiert";
+    case TState::Running:      return T(L"● verbunden");
+    case TState::StartPending: return T(L"verbindet …");
+    case TState::StopPending:  return T(L"trennt …");
+    case TState::Stopped:      return T(L"getrennt");
+    case TState::Missing:      return T(L"nicht installiert");
     default:                   return L"?";
     }
 }
@@ -1079,10 +1084,10 @@ void FillTunnels() {
         wchar_t rx[32] = L"", tx[32] = L"", use[256] = L"";
         if (t.state == static_cast<int>(TState::Running)) { FormatBytes(t.rx, rx, _countof(rx)); FormatBytes(t.tx, tx, _countof(tx)); }
         const Config& c = g_m.cfg;
-        if (c.defaultTunnel >= 0 && StrIEq(c.tunnels[c.defaultTunnel], t.name)) Appendf(use, _countof(use), L"Standard (unbekannte Netze)");
+        if (c.defaultTunnel >= 0 && StrIEq(c.tunnels[c.defaultTunnel], t.name)) Appendf(use, _countof(use), T(L"Standard (unbekannte Netze)"));
         for (int r = 0; r < c.ruleCount; ++r)
             if (c.rules[r].tunnel >= 0 && StrIEq(c.tunnels[c.rules[r].tunnel], t.name))
-                Appendf(use, _countof(use), L"%lsRegel %ls", use[0] ? L", " : L"", c.rules[r].name);
+                Appendf(use, _countof(use), T(L"%lsRegel %ls"), use[0] ? L", " : L"", c.rules[r].name);
         SetCell(lv, i, 0, t.name);
         SetCell(lv, i, 1, StateText(t.state));
         SetCell(lv, i, 2, rx);
@@ -1100,12 +1105,12 @@ void FillRules() {
         if (r.hasMac) MacToStr(r.gwMac, mac, _countof(mac));
         if (r.hasBssid) MacToStr(r.bssid, bssid, _countof(bssid));
         SetCell(lv, i, 0, r.name);
-        SetCell(lv, i, 1, r.hasKind ? KindName(r.kind) : L"beliebig");
+        SetCell(lv, i, 1, r.hasKind ? KindName(r.kind) : T(L"beliebig"));
         SetCell(lv, i, 2, r.hasSsid ? r.ssid : L"");
         SetCell(lv, i, 3, bssid);
         SetCell(lv, i, 4, mac);
         SetCell(lv, i, 5, r.hasDns ? r.dnsSuffix : L"");
-        SetCell(lv, i, 6, r.tunnel == kNoTunnel ? L"kein Tunnel" : g_edit.tunnels[r.tunnel]);
+        SetCell(lv, i, 6, r.tunnel == kNoTunnel ? T(L"kein Tunnel") : g_edit.tunnels[r.tunnel]);
     }
 }
 
@@ -1141,7 +1146,7 @@ void UpdateButtons() {
     EnableWindow(Item(IDC_CONNECT), conn && sel && !selRunning && g_m.tun[t].state != static_cast<int>(TState::Missing));
     EnableWindow(Item(IDC_DISCONNECT), conn && AnyRunning());
     EnableWindow(Item(IDC_AUTO), conn && !StrEq(g_m.mode, L"auto"));
-    SetWindowTextW(Item(IDC_AUTO), StrEq(g_m.mode, L"paused") ? L"Pause beenden" : L"Automatik");
+    SetWindowTextW(Item(IDC_AUTO), StrEq(g_m.mode, L"paused") ? T(L"Pause beenden") : T(L"Automatik"));
     EnableWindow(Item(IDC_EDIT), sel);
     EnableWindow(Item(IDC_REMOVE), sel);
     const int r = SelectedIndex(IDC_RULES);
@@ -1152,7 +1157,7 @@ void UpdateButtons() {
     EnableWindow(Item(IDC_TRUST), conn && g_m.nIf > 0);
     EnableWindow(Item(IDC_MAPNET), conn && g_m.nIf > 0);
     EnableWindow(Item(IDC_APPLY), g_dirty);
-    SetWindowTextW(Item(IDC_APPLY), g_dirty ? L"Übernehmen (Admin) *" : L"Übernehmen (Admin)");
+    SetWindowTextW(Item(IDC_APPLY), g_dirty ? T(L"Übernehmen (Admin) *") : T(L"Übernehmen (Admin)"));
     ShowWindow(Item(IDC_INSTALL), (g_page == 0 && !g_m.installed) ? SW_SHOW : SW_HIDE);
 }
 
@@ -1160,42 +1165,48 @@ void UpdateUi() {
     // Statuszeile (Reiter Tunnel)
     wchar_t s[1200] = L"";
     if (!g_m.installed) {
-        Appendf(s, _countof(s), L"Der Dienst WG-AutoSwitch ist nicht installiert. Ohne Dienst gibt es keine Automatik.");
+        Appendf(s, _countof(s), T(L"Der Dienst WG-AutoSwitch ist nicht installiert. Ohne Dienst gibt es keine Automatik."));
     } else if (!g_m.connected) {
-        Appendf(s, _countof(s), L"Dienst nicht erreichbar (gestoppt?). Ereignisanzeige › Anwendung, Quelle WgAutoSwitch.");
+        Appendf(s, _countof(s), T(L"Dienst nicht erreichbar (gestoppt?). Ereignisanzeige › Anwendung, Quelle WgAutoSwitch."));
     } else {
-        Appendf(s, _countof(s), L"Aktiv: %ls", g_m.target[0] ? g_m.target : L"kein Tunnel");
+        Appendf(s, _countof(s), T(L"Aktiv: %ls"), g_m.target[0] ? g_m.target : T(L"kein Tunnel"));
         if (StrEq(g_m.mode, L"paused")) {
             wchar_t t[16];
             FormatLocalTime(g_m.pausedUntil, t, _countof(t));
-            Appendf(s, _countof(s), L"   ·   Automatik pausiert bis %ls", t);
+            Appendf(s, _countof(s), T(L"   ·   Automatik pausiert bis %ls"), t);
         } else if (StrEq(g_m.mode, L"manual")) {
-            Appendf(s, _countof(s), L"   ·   manuell bis zum nächsten Netzwechsel");
+            Appendf(s, _countof(s), T(L"   ·   manuell bis zum nächsten Netzwechsel"));
         } else {
-            Appendf(s, _countof(s), L"   ·   Automatik aktiv");
+            Appendf(s, _countof(s), T(L"   ·   Automatik aktiv"));
         }
-        if (g_m.captive) Appendf(s, _countof(s), L"   ·   wartet auf Captive-Portal-Anmeldung");
-        if (g_m.failsafe) Appendf(s, _countof(s), L"   ·   Fail-safe");
-        Appendf(s, _countof(s), L"\r\n%ls", g_m.why);
+        if (g_m.captive) Appendf(s, _countof(s), T(L"   ·   wartet auf Captive-Portal-Anmeldung"));
+        if (g_m.failsafe) Appendf(s, _countof(s), T(L"   ·   Fail-safe"));
+        Appendf(s, _countof(s), L"\r\n");
+        if (g_m.nIf == 0) Appendf(s, _countof(s), T(L"Kein Netz verbunden. "));
+        for (int i = 0; i < g_m.nIf; ++i) {
+            if (g_m.ifRule[i][0]) Appendf(s, _countof(s), T(L"%ls \"%ls\": Regel %ls. "), KindName(g_m.ifs[i].kind), g_m.ifs[i].alias, g_m.ifRule[i]);
+            else Appendf(s, _countof(s), T(L"%ls \"%ls\": unbekanntes Netz. "), KindName(g_m.ifs[i].kind), g_m.ifs[i].alias);
+        }
+        Appendf(s, _countof(s), T(L"Konnektivitaet: %ls."), ConnName(static_cast<Connectivity>(g_m.conn)));
     }
     SetWindowTextW(Item(IDC_STATUS), s);
 
     // Netzinfo (Reiter Auto-Tunneling)
     wchar_t n[2400] = L"";
-    if (g_m.connected && !g_m.cfgValid) Appendf(n, _countof(n), L"⚠ Konfiguration ungültig: %ls\r\n", g_m.cfgErr);
-    if (g_m.connected && g_m.nIf == 0) Appendf(n, _countof(n), L"Kein Netz verbunden.\r\n");
+    if (g_m.connected && !g_m.cfgValid) Appendf(n, _countof(n), T(L"⚠ Konfiguration ungültig: %ls\r\n"), g_m.cfgErr);
+    if (g_m.connected && g_m.nIf == 0) Appendf(n, _countof(n), T(L"Kein Netz verbunden.\r\n"));
     for (int i = 0; i < g_m.nIf; ++i) {
         const IfInfo& f = g_m.ifs[i];
         wchar_t mac[24], bssid[24];
         MacToStr(f.gwMac, mac, _countof(mac));
         MacToStr(f.bssid, bssid, _countof(bssid));
         Appendf(n, _countof(n), L"%ls «%ls»", KindName(f.kind), f.alias);
-        if (f.kind == IfKind::Wifi) Appendf(n, _countof(n), L"  ·  SSID %ls  ·  BSSID %ls", f.hasSsid ? f.ssid : L"(nicht lesbar)", f.hasBssid ? bssid : L"–");
-        Appendf(n, _countof(n), L"  ·  Gateway %ls  ·  DNS %ls\r\n      → %ls%ls\r\n", f.hasMac ? mac : L"(nicht ermittelbar)",
-                f.dnsSuffix[0] ? f.dnsSuffix : L"–", g_m.ifRule[i][0] ? L"Regel " : L"unbekannt, Standardtunnel",
+        if (f.kind == IfKind::Wifi) Appendf(n, _countof(n), L"  ·  SSID %ls  ·  BSSID %ls", f.hasSsid ? f.ssid : T(L"(nicht lesbar)"), f.hasBssid ? bssid : L"–");
+        Appendf(n, _countof(n), L"  ·  Gateway %ls  ·  DNS %ls\r\n      → %ls%ls\r\n", f.hasMac ? mac : T(L"(nicht ermittelbar)"),
+                f.dnsSuffix[0] ? f.dnsSuffix : L"–", g_m.ifRule[i][0] ? T(L"Regel ") : T(L"unbekannt, Standardtunnel"),
                 g_m.ifRule[i]);
     }
-    if (g_m.connected) Appendf(n, _countof(n), L"Konnektivität: %ls", ConnName(static_cast<Connectivity>(g_m.conn)));
+    if (g_m.connected) Appendf(n, _countof(n), T(L"Konnektivität: %ls"), ConnName(static_cast<Connectivity>(g_m.conn)));
     SetWindowTextW(Item(IDC_NETINFO), n);
 
     FillTunnels();
@@ -1265,41 +1276,41 @@ void CreateMainControls() {
     TCITEMW ti;
     ZeroMemory(&ti, sizeof ti);
     ti.mask = TCIF_TEXT;
-    ti.pszText = const_cast<LPWSTR>(L"Tunnel");
+    ti.pszText = const_cast<LPWSTR>(T(L"Tunnel"));
     SendMessageW(g_tab, TCM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&ti));
     ti.pszText = const_cast<LPWSTR>(L"Auto-Tunneling");
     SendMessageW(g_tab, TCM_INSERTITEMW, 1, reinterpret_cast<LPARAM>(&ti));
 
     const DWORD lvStyle = LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_TABSTOP;
     Ctl(g_main, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, IDC_STATUS);
-    Ctl(g_main, WC_BUTTONW, L"Dienst installieren …", BS_PUSHBUTTON | WS_TABSTOP, IDC_INSTALL);
+    Ctl(g_main, WC_BUTTONW, T(L"Dienst installieren …"), BS_PUSHBUTTON | WS_TABSTOP, IDC_INSTALL);
     HWND lv = Ctl(g_main, WC_LISTVIEWW, L"", lvStyle, IDC_TUNLIST, WS_EX_CLIENTEDGE);
     SendMessageW(lv, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-    Ctl(g_main, WC_BUTTONW, L"Verbinden", BS_PUSHBUTTON | WS_TABSTOP, IDC_CONNECT);
-    Ctl(g_main, WC_BUTTONW, L"Trennen", BS_PUSHBUTTON | WS_TABSTOP, IDC_DISCONNECT);
-    Ctl(g_main, WC_BUTTONW, L"Automatik", BS_PUSHBUTTON | WS_TABSTOP, IDC_AUTO);
-    Ctl(g_main, WC_BUTTONW, L"Importieren …", BS_PUSHBUTTON | WS_TABSTOP, IDC_IMPORT);
-    Ctl(g_main, WC_BUTTONW, L"Aus Zwischenablage …", BS_PUSHBUTTON | WS_TABSTOP, IDC_CLIP);
-    Ctl(g_main, WC_BUTTONW, L"Bearbeiten …", BS_PUSHBUTTON | WS_TABSTOP, IDC_EDIT);
-    Ctl(g_main, WC_BUTTONW, L"Entfernen", BS_PUSHBUTTON | WS_TABSTOP, IDC_REMOVE);
+    Ctl(g_main, WC_BUTTONW, T(L"Verbinden"), BS_PUSHBUTTON | WS_TABSTOP, IDC_CONNECT);
+    Ctl(g_main, WC_BUTTONW, T(L"Trennen"), BS_PUSHBUTTON | WS_TABSTOP, IDC_DISCONNECT);
+    Ctl(g_main, WC_BUTTONW, T(L"Automatik"), BS_PUSHBUTTON | WS_TABSTOP, IDC_AUTO);
+    Ctl(g_main, WC_BUTTONW, T(L"Importieren …"), BS_PUSHBUTTON | WS_TABSTOP, IDC_IMPORT);
+    Ctl(g_main, WC_BUTTONW, T(L"Aus Zwischenablage …"), BS_PUSHBUTTON | WS_TABSTOP, IDC_CLIP);
+    Ctl(g_main, WC_BUTTONW, T(L"Bearbeiten …"), BS_PUSHBUTTON | WS_TABSTOP, IDC_EDIT);
+    Ctl(g_main, WC_BUTTONW, T(L"Entfernen"), BS_PUSHBUTTON | WS_TABSTOP, IDC_REMOVE);
 
     Ctl(g_main, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, IDC_NETINFO);
-    Ctl(g_main, WC_BUTTONW, L"Als vertraut speichern …", BS_PUSHBUTTON | WS_TABSTOP, IDC_TRUST);
-    Ctl(g_main, WC_BUTTONW, L"Tunnel zuordnen …", BS_PUSHBUTTON | WS_TABSTOP, IDC_MAPNET);
+    Ctl(g_main, WC_BUTTONW, T(L"Als vertraut speichern …"), BS_PUSHBUTTON | WS_TABSTOP, IDC_TRUST);
+    Ctl(g_main, WC_BUTTONW, T(L"Tunnel zuordnen …"), BS_PUSHBUTTON | WS_TABSTOP, IDC_MAPNET);
     lv = Ctl(g_main, WC_LISTVIEWW, L"", lvStyle, IDC_RULES, WS_EX_CLIENTEDGE);
     SendMessageW(lv, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-    Ctl(g_main, WC_BUTTONW, L"Neu …", BS_PUSHBUTTON | WS_TABSTOP, IDC_RNEW);
-    Ctl(g_main, WC_BUTTONW, L"Bearbeiten …", BS_PUSHBUTTON | WS_TABSTOP, IDC_REDIT);
-    Ctl(g_main, WC_BUTTONW, L"Löschen", BS_PUSHBUTTON | WS_TABSTOP, IDC_RDEL);
+    Ctl(g_main, WC_BUTTONW, T(L"Neu …"), BS_PUSHBUTTON | WS_TABSTOP, IDC_RNEW);
+    Ctl(g_main, WC_BUTTONW, T(L"Bearbeiten …"), BS_PUSHBUTTON | WS_TABSTOP, IDC_REDIT);
+    Ctl(g_main, WC_BUTTONW, T(L"Löschen"), BS_PUSHBUTTON | WS_TABSTOP, IDC_RDEL);
     Ctl(g_main, WC_BUTTONW, L"▲", BS_PUSHBUTTON | WS_TABSTOP, IDC_RUP);
     Ctl(g_main, WC_BUTTONW, L"▼", BS_PUSHBUTTON | WS_TABSTOP, IDC_RDOWN);
-    Ctl(g_main, L"STATIC", L"Standardtunnel:", SS_LEFT, IDC_DEFLBL);
+    Ctl(g_main, L"STATIC", T(L"Standardtunnel:"), SS_LEFT, IDC_DEFLBL);
     Ctl(g_main, WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, IDC_DEFAULT);
-    Ctl(g_main, WC_BUTTONW, L"Ohne Netz Tunnel an", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_NONET);
-    Ctl(g_main, WC_BUTTONW, L"Captive Portal abwarten", BS_AUTOCHECKBOX | WS_TABSTOP, IDC_CAPTIVE);
-    Ctl(g_main, L"STATIC", L"Entprellung ms:", SS_LEFT, IDC_DEBLBL);
+    Ctl(g_main, WC_BUTTONW, T(L"Ohne Netz Tunnel an"), BS_AUTOCHECKBOX | WS_TABSTOP, IDC_NONET);
+    Ctl(g_main, WC_BUTTONW, T(L"Captive Portal abwarten"), BS_AUTOCHECKBOX | WS_TABSTOP, IDC_CAPTIVE);
+    Ctl(g_main, L"STATIC", T(L"Entprellung ms:"), SS_LEFT, IDC_DEBLBL);
     Ctl(g_main, WC_EDITW, L"", ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP, IDC_DEBOUNCE, WS_EX_CLIENTEDGE);
-    Ctl(g_main, WC_BUTTONW, L"Übernehmen (Admin)", BS_PUSHBUTTON | WS_TABSTOP, IDC_APPLY);
+    Ctl(g_main, WC_BUTTONW, T(L"Übernehmen (Admin)"), BS_PUSHBUTTON | WS_TABSTOP, IDC_APPLY);
     SetupColumns();
 }
 
@@ -1340,12 +1351,12 @@ Rule RuleFromCurrentNetwork(bool trusted) {
 }
 
 void AddRuleDialog(Rule tmpl) {
-    if (g_edit.ruleCount >= kMaxRules) { Msg(g_main, L"Maximal 32 Regeln.", MB_ICONWARNING); return; }
+    if (g_edit.ruleCount >= kMaxRules) { Msg(g_main, T(L"Maximal 32 Regeln."), MB_ICONWARNING); return; }
     Rule r = tmpl;
     if (!EditRule(g_main, r, g_edit, -1)) return;
     g_edit.rules[g_edit.ruleCount++] = r;
     MarkDirty();
-    if (MessageBoxW(g_main, L"Regel hinzugefügt. Jetzt übernehmen (Adminrechte)?", kTitle, MB_YESNO | MB_ICONQUESTION) == IDYES)
+    if (MessageBoxW(g_main, T(L"Regel hinzugefügt. Jetzt übernehmen (Adminrechte)?"), kTitle, MB_YESNO | MB_ICONQUESTION) == IDYES)
         SendMessageW(g_main, WM_COMMAND, IDC_APPLY, 0);
 }
 
@@ -1354,23 +1365,23 @@ void ApplyConfig() {
     wchar_t v[32];
     GetWindowTextW(Item(IDC_DEBOUNCE), v, _countof(v));
     unsigned ms = 0;
-    if (!ParseUInt(v, ms) || ms < 500 || ms > 10000) { Msg(g_main, L"Entprellung: 500 bis 10000 ms.", MB_ICONWARNING); return; }
+    if (!ParseUInt(v, ms) || ms < 500 || ms > 10000) { Msg(g_main, T(L"Entprellung: 500 bis 10000 ms."), MB_ICONWARNING); return; }
     g_edit.debounceMs = ms;
     g_edit.noNetworkOn = SendMessageW(Item(IDC_NONET), BM_GETCHECK, 0, 0) == BST_CHECKED;
     g_edit.captiveWait = SendMessageW(Item(IDC_CAPTIVE), BM_GETCHECK, 0, 0) == BST_CHECKED;
     const LRESULT sel = SendMessageW(Item(IDC_DEFAULT), CB_GETCURSEL, 0, 0);
-    if (sel < 0) { Msg(g_main, L"Bitte einen Standardtunnel wählen (zuerst einen Tunnel importieren).", MB_ICONWARNING); return; }
+    if (sel < 0) { Msg(g_main, T(L"Bitte einen Standardtunnel wählen (zuerst einen Tunnel importieren)."), MB_ICONWARNING); return; }
     wchar_t def[kNameLen];
     SendMessageW(Item(IDC_DEFAULT), CB_GETLBTEXT, static_cast<WPARAM>(sel), reinterpret_cast<LPARAM>(def));
     g_edit.defaultTunnel = AddTunnel(g_edit, def);
     if (g_edit.defaultTunnel < 0) return;
 
     static wchar_t text[48 * 1024];
-    if (!WriteConfigText(g_edit, text, _countof(text))) { Msg(g_main, L"Die Konfiguration enthält ungültige Werte.", MB_ICONERROR); return; }
+    if (!WriteConfigText(g_edit, text, _countof(text))) { Msg(g_main, T(L"Die Konfiguration enthält ungültige Werte."), MB_ICONERROR); return; }
     wchar_t dir[MAX_PATH], tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, dir);
     swprintf_s(tmp, _countof(tmp), L"%lswgas-config-%lu.ini", dir, GetTickCount());
-    if (!WriteUtf16File(tmp, text, false)) { Msg(g_main, L"Temporäre Datei konnte nicht geschrieben werden.", MB_ICONERROR); return; }
+    if (!WriteUtf16File(tmp, text, false)) { Msg(g_main, T(L"Temporäre Datei konnte nicht geschrieben werden."), MB_ICONERROR); return; }
     wchar_t params[MAX_PATH + 32];
     swprintf_s(params, _countof(params), L"setconfig \"%ls\"", tmp);
     RunWgasElevated(g_main, params, Op::SetConfig, tmp);
@@ -1399,7 +1410,7 @@ void OnCommand(int id) {
         ZeroMemory(&ofn, sizeof ofn);
         ofn.lStructSize = sizeof ofn;
         ofn.hwndOwner = g_main;
-        ofn.lpstrFilter = L"WireGuard-Konfiguration (*.conf)\0*.conf\0Alle Dateien\0*.*\0";
+        ofn.lpstrFilter = T(L"WireGuard-Konfiguration (*.conf)\0*.conf\0Alle Dateien\0*.*\0");
         ofn.lpstrFile = file;
         ofn.nMaxFile = MAX_PATH;
         ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
@@ -1418,7 +1429,7 @@ void OnCommand(int id) {
     case IDC_REMOVE:
         if (tun) {
             wchar_t q[160];
-            swprintf_s(q, _countof(q), L"Tunnel «%ls» wirklich entfernen? Die Konfiguration mit dem privaten Schlüssel wird gelöscht.", tun->name);
+            swprintf_s(q, _countof(q), T(L"Tunnel «%ls» wirklich entfernen? Die Konfiguration mit dem privaten Schlüssel wird gelöscht."), tun->name);
             if (MessageBoxW(g_main, q, kTitle, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
                 swprintf_s(params, _countof(params), L"remove %ls", tun->name);
                 RunWgasElevated(g_main, params);
@@ -1477,6 +1488,28 @@ void OnCommand(int id) {
     }
 }
 
+// Sprache speichern und die Oberflaeche auf Wunsch neu starten (Texte werden beim Start gesetzt).
+void ChangeLanguage(const wchar_t* code) {
+    SetLanguageOverride(code);
+    InitLanguage(false);
+    if (MessageBoxW(g_main, T(L"Die Sprache wird nach einem Neustart der Oberfläche übernommen. Jetzt neu starten?"),
+                    kTitle, MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return;
+    wchar_t exe[MAX_PATH], cmd[MAX_PATH + 8];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    swprintf_s(cmd, _countof(cmd), L"\"%ls\"", exe);
+    if (g_mutex) { CloseHandle(g_mutex); g_mutex = nullptr; }   // neue Instanz darf starten
+    STARTUPINFOW si;
+    ZeroMemory(&si, sizeof si);
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi;
+    if (CreateProcessW(exe, cmd, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    DestroyWindow(g_main);
+}
+
 void OnTrayCommand(UINT id) {
     wchar_t req[64];
     if (id >= ID_TRAY_TUNNEL0 && id < ID_TRAY_TUNNEL0 + kMaxKnown) {
@@ -1497,6 +1530,9 @@ void OnTrayCommand(UINT id) {
     case ID_TRAY_PAUSE480:   SendCommand(L"pause\t480"); break;
     case ID_TRAY_AUTOSTART:  SetAutostart(!AutostartEnabled()); break;
     case ID_TRAY_EXIT:       DestroyWindow(g_main); break;
+    case ID_TRAY_LANG_AUTO:  ChangeLanguage(nullptr); break;
+    case ID_TRAY_LANG_DE:    ChangeLanguage(L"de"); break;
+    case ID_TRAY_LANG_EN:    ChangeLanguage(L"en"); break;
     default: break;
     }
 }
@@ -1626,11 +1662,11 @@ bool RegisterClasses() {
 
 int RunMain(bool startHidden) {
     // Nur eine Instanz je Benutzer; zweiter Start holt das Fenster nach vorn.
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\WgAutoSwitchGui");
-    if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+    g_mutex = CreateMutexW(nullptr, TRUE, L"Local\\WgAutoSwitchGui");
+    if (g_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND other = FindWindowW(kMainClass, nullptr);
         if (other && !startHidden) PostMessageW(other, WM_APP_SHOW, 0, 0);
-        CloseHandle(mutex);
+        CloseHandle(g_mutex);
         return 0;
     }
     FirstRunDefaults();
@@ -1666,7 +1702,7 @@ int RunMain(bool startHidden) {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 if (g_stateEv) CloseHandle(g_stateEv);
-                CloseHandle(mutex);
+                if (g_mutex) CloseHandle(g_mutex);
                 return static_cast<int>(msg.wParam);
             }
             if (!IsDialogMessageW(g_main, &msg)) {
@@ -1687,6 +1723,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_STANDARD_CLASSES;
     InitCommonControlsEx(&icc);
     if (!InitPaths(g_paths) || !RegisterClasses()) return 1;
+    InitLanguage(false);
 
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
