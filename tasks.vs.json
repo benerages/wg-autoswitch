@@ -1,0 +1,32 @@
+{
+  "version": "0.2.1",
+  "tasks": [
+    {
+      "taskLabel": "WG-AutoSwitch: Build ARM64",
+      "appliesTo": "/",
+      "type": "launch",
+      "contextType": "build",
+      "command": "${env.COMSPEC}",
+      "args": [ "/c", "build.cmd" ],
+      "workingDirectory": "${workspaceRoot}"
+    },
+    {
+      "taskLabel": "WG-AutoSwitch: Build x64",
+      "appliesTo": "/",
+      "type": "launch",
+      "contextType": "custom",
+      "command": "${env.COMSPEC}",
+      "args": [ "/c", "build.cmd", "x64" ],
+      "workingDirectory": "${workspaceRoot}"
+    },
+    {
+      "taskLabel": "WG-AutoSwitch: Unit tests",
+      "appliesTo": "/",
+      "type": "launch",
+      "contextType": "custom",
+      "command": "${env.COMSPEC}",
+      "args": [ "/c", "build.cmd", "test" ],
+      "workingDirectory": "${workspaceRoot}"
+    }
+  ]
+}

@@ -1,105 +1,126 @@
-# WG-AutoSwitch 1.1
+# WG-AutoSwitch
 
-Nativer WireGuard-Client-Aufsatz für Windows 11 ARM64 (Snapdragon/Surface, läuft auch auf x64), angelehnt an [WG Tunnel](https://github.com/wgtunnel/desktop). Ein Dienst startet mit Windows und schaltet je nach Netz den passenden WireGuard-Tunnel ein, um oder aus. Eine Tray-Oberfläche zeigt den Zustand und verwaltet Tunnel und Regeln.
+A small native companion for **WireGuard for Windows** that turns your tunnel on and off automatically depending on the network you are connected to. Built for Windows 11 on ARM64 (Snapdragon, Surface), and runs just as well on x64. Inspired by [WG Tunnel](https://github.com/wgtunnel/desktop).
 
-| Datei | Rolle |
+Typical use: at home (trusted network) no tunnel; anywhere else (hotel, train, phone hotspot, office) the tunnel comes up by itself.
+
+> **Written with Claude.** The code, build script and documentation were created together with [Claude](https://claude.ai) (Anthropic), then built and tested on a real Surface Pro (ARM64).
+
+| File | Role |
 |---|---|
-| `wgas.exe` | Windows-Dienst (virtuelles Konto, ereignisgesteuert) und Kommandozeile |
-| `wgas-gui.exe` | Tray und Fenster ohne Adminrechte; für Schlüssel und Regeln fragt sie per UAC |
-| WireGuard für Windows | offizielle Installation (ARM64-MSI): Treiber und Tunnel-Dienste |
+| `wgas.exe` | Windows service (virtual account, event-driven) and command line |
+| `wgas-gui.exe` | Tray icon and window; runs without admin rights and asks via UAC only for keys and rules |
+| WireGuard for Windows | The official installation (ARM64 MSI) provides the driver and the tunnel services |
 
-## Funktionen (Stufe 1)
+The user interface is currently in German.
 
-**Tunnel**
-- Liste aller Tunnel mit Status und empfangenen/gesendeten Daten
-- Verbinden und Trennen per Klick, Doppelklick oder Tray-Menü
-- Import aus Datei (OPNsense-Peer-Generator) oder Zwischenablage, Bearbeiten im eingebauten Editor, Entfernen
-- Private Schlüssel liegen nur in `%ProgramData%\WgAutoSwitch\tunnels` (SYSTEM und Administratoren). Nach dem Import aus der Zwischenablage wird sie geleert; die Quelldatei kann der Editor sicher löschen.
+## Features
 
-**Auto-Tunneling**
-- Zeigt das aktuelle Netz: Typ, SSID, BSSID, Gateway-MAC, DNS-Suffix, passende Regel, Konnektivität
-- «Als vertraut speichern» und «Tunnel zuordnen» legen mit einem Klick eine Regel aus dem aktuellen Netz an
-- Regelliste mit Reihenfolge (erste passende gewinnt); Standardtunnel für unbekannte Netze
-- Optionen: Tunnel ohne Netz, Captive Portal abwarten, Entprellung
-- Manuelles Schalten gilt bis zum nächsten echten Netzwechsel. WLAN-Roaming zwischen Access Points zählt nicht als Wechsel.
-- Pausieren für 15 Minuten, 1 Stunde oder 8 Stunden
+**Tunnels**
+- List of all tunnels with status and bytes received/sent
+- Connect/disconnect by button, double-click or tray menu
+- Import from file (e.g. the OPNsense *Peer generator*) or from the clipboard; built-in editor; remove
+- Private keys are stored only in `%ProgramData%\WgAutoSwitch\tunnels` (SYSTEM and Administrators). After a clipboard import the clipboard is cleared, and after a file import the editor offers to securely delete the source file.
+
+**Auto-tunneling**
+- Shows the current network: type, SSID, BSSID, gateway MAC, DNS suffix, matching rule and connectivity
+- *Save as trusted* and *Assign tunnel* create a rule from the current network with one click
+- Ordered rule list (first match wins) and a default tunnel for unknown networks
+- Options: keep tunnel on without network, wait for captive portal login, debounce time
+- Manual switching holds until the next real network change. Roaming between access points of the same Wi-Fi does not count as a change.
+- Pause for 15 minutes, 1 hour or 8 hours
 
 **Tray**
-- Farbiger Punkt: grün mit weissem Kern = Tunnel aktiv, grau = kein Tunnel (vertrautes Netz), orange = pausiert/manuell/Captive Portal, rot = Dienst nicht erreichbar
-- Menü: Tunnel wählen, Trennen, Automatik fortsetzen oder pausieren, Öffnen, Autostart, Beenden
-- Startet beim Anmelden mit; abschaltbar im Tray-Menü
+- Coloured dot: green with white core = tunnel up, grey = no tunnel (trusted network), orange = paused/manual/captive portal, red = service not reachable
+- Menu: pick a tunnel, disconnect, resume or pause automation, open, start at sign-in, exit
+- Starts at sign-in by default (can be turned off in the tray menu)
 
-Bewusst nicht enthalten: AmneziaWG und Proxy-Modus (brauchen eine eigene WireGuard-Implementierung). Netze nur nach Typ oder WLAN-Name als vertraut einzustufen ist ebenfalls nicht möglich.
+Intentionally not included: AmneziaWG and proxy mode, which would need a separate WireGuard implementation. A network cannot be trusted by type or Wi-Fi name alone (see *Decision rules*).
 
-**Geplant (Stufe 2):** Kill-Switch über die Windows-Firewall (WFP) mit LAN-Ausnahme, Split-DNS (NRPT), DNS-over-HTTPS.
+## Decision rules
 
-## Entscheidungsregeln
-
-| Situation | Ergebnis |
+| Situation | Result |
 |---|---|
-| Netz passt auf Regel «kein Tunnel» | kein Tunnel |
-| Netz passt auf Regel mit Tunnel X | Tunnel X |
-| unbekanntes Netz, Handy-Hotspot, Mobilfunk | Standardtunnel |
-| kein Netz | kein Tunnel (spart Akku), ausser «Ohne Netz Tunnel an» |
-| LAN und WLAN gleichzeitig | kein Tunnel nur, wenn **alle** Netze «kein Tunnel» ergeben; bei Konflikt Standardtunnel |
-| Zustand unklar, Konfiguration ungültig oder Dateirechte unsicher | Fail-safe: Standardtunnel an |
-| Captive Portal (Hotel, Zug) | Tunnel wartet, bis Windows Internetzugang meldet |
-| Start scheitert | ein Eintrag im Ereignisprotokoll, neue Versuche nach 30 s, 2 min und 10 min |
+| Network matches a rule with *no tunnel* | no tunnel |
+| Network matches a rule with tunnel X | tunnel X |
+| Unknown network, phone hotspot, mobile broadband | default tunnel |
+| No network | no tunnel (saves battery), unless *keep tunnel on without network* is set |
+| Ethernet and Wi-Fi at the same time | no tunnel only if **all** networks say *no tunnel*; on conflicting rules, default tunnel |
+| State unclear, configuration invalid or file permissions unsafe | fail-safe: default tunnel on |
+| Captive portal (hotel, train) | tunnel waits until Windows reports internet access |
+| Tunnel fails to start | one event log entry, retries after 30 s, 2 min and 10 min |
 
-Ein **vertrautes Netz** (kein Tunnel) braucht die Gateway-MAC plus DNS-Suffix, SSID oder BSSID. Eine SSID allein kann jeder fälschen.
+A **trusted network** (no tunnel) needs the gateway MAC **plus** a DNS suffix, SSID or BSSID. A Wi-Fi name alone can be spoofed by anyone.
 
-## 1. Bauen
+## Build
 
-Voraussetzung: [Build Tools für Visual Studio 2022](https://visualstudio.microsoft.com/de/downloads/#build-tools-for-visual-studio-2022) mit «Desktopentwicklung mit C++», «MSVC ARM64-Buildtools» und Windows 11 SDK (10.0.22621 oder neuer).
+Requirements: [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) with *Desktop development with C++*, *MSVC ARM64 build tools* and the Windows 11 SDK (10.0.22621 or newer). No other dependencies: C++20 and Win32 only, no frameworks.
 
 ```bat
-build.cmd test      & rem Unit-Tests der Entscheidungslogik
-build.cmd           & rem -> build\arm64\wgas.exe und build\arm64\wgas-gui.exe
+build.cmd test      & rem unit tests of the decision logic
+build.cmd           & rem -> build\arm64\wgas.exe and build\arm64\wgas-gui.exe
+build.cmd x64       & rem x64 build
 ```
 
-Läuft `wgas-gui.exe` noch, kann der Linker sie nicht überschreiben. Vor dem Neubauen im Tray **Beenden** wählen. Optional signiert `set WGAS_SIGN_THUMB=<Fingerabdruck>` beide Programme.
+Each binary is about 80 KB. If `wgas-gui.exe` is still running, the linker cannot overwrite it, so choose **Exit** in the tray menu first. Optionally `set WGAS_SIGN_THUMB=<certificate thumbprint>` signs both binaries.
 
-## 2. Installieren
+## Install
 
-1. WireGuard für Windows (ARM64-MSI) von <https://www.wireguard.com/install/> installieren. Tunnel **nicht** in der WireGuard-Oberfläche anlegen.
-2. `build\arm64\wgas-gui.exe` per Doppelklick starten und **Dienst installieren …** klicken (UAC). Das kopiert beide Programme nach `%ProgramFiles%\WgAutoSwitch\` und richtet den Dienst ein. Danach die Oberfläche einmal über das Tray-Menü beenden und aus `%ProgramFiles%\WgAutoSwitch\wgas-gui.exe` neu starten; der Autostart zeigt bereits dorthin.
-3. Reiter **Tunnel** → **Importieren …** (die .conf aus OPNsense: VPN › WireGuard › Peer generator) oder **Aus Zwischenablage …**
-4. Reiter **Auto-Tunneling** → zu Hause **Als vertraut speichern …**, dann **Übernehmen (Admin)**
+1. Install [WireGuard for Windows](https://www.wireguard.com/install/) (ARM64 MSI on ARM devices). Do **not** add tunnels in the WireGuard app itself.
+2. Start `build\arm64\wgas-gui.exe` and click **Dienst installieren …** (*install service*, UAC prompt). This copies both programs to `%ProgramFiles%\WgAutoSwitch\` and sets up the service, which then starts with Windows before sign-in. Exit the tray app once and start it again from `%ProgramFiles%\WgAutoSwitch\wgas-gui.exe`; the sign-in entry already points there.
+3. On the **Tunnel** tab, choose **Importieren …** (import a `.conf`) or **Aus Zwischenablage …** (from clipboard).
+4. On the **Auto-Tunneling** tab, at home: **Als vertraut speichern …** (*save as trusted*), then **Übernehmen (Admin)** (*apply*).
 
-## Kommandozeile
+### Reinstalling WireGuard
 
-| Befehl | Zweck |
+Uninstalling WireGuard removes its tunnel services. Your keys and rules are kept in `%ProgramData%\WgAutoSwitch`. After reinstalling WireGuard, restore all tunnels from an elevated PowerShell:
+
+```powershell
+$wgas = "$env:ProgramFiles\WgAutoSwitch\wgas.exe"
+Get-ChildItem "$env:ProgramData\WgAutoSwitch\tunnels\*.conf" | ForEach-Object { & $wgas import $_.FullName }
+```
+
+Updating WireGuard needs no action.
+
+## Command line
+
+| Command | Purpose |
 |---|---|
-| `wgas install` / `uninstall [/purge]` | Dienst einrichten bzw. entfernen (Admin); `/purge` löscht auch Tunnel und Konfiguration |
-| `wgas import <a.conf> [...]` / `remove <tunnel>` | Tunnel verwalten (Admin) |
-| `wgas status` | Zustand, Netze, Soll-Zustand |
-| `wgas check` / `reload` | Konfiguration prüfen bzw. übernehmen (Admin) |
-| `wgas connect <tunnel>` / `disconnect` / `auto` | manuell schalten bzw. Automatik fortsetzen |
-| `wgas pause <min>` / `resume` | Automatik anhalten bzw. fortsetzen |
+| `wgas install` / `uninstall [/purge]` | install or remove the service (admin); `/purge` also deletes tunnels and configuration |
+| `wgas import <a.conf> [...]` / `remove <tunnel>` | manage tunnels (admin); the file name becomes the tunnel name |
+| `wgas status` | state, networks and target tunnel |
+| `wgas check` / `reload` | validate or apply `config.ini` (admin) |
+| `wgas connect <tunnel>` / `disconnect` / `auto` | switch manually, or hand control back to the automation |
+| `wgas pause <min>` / `resume` | pause or resume the automation |
 
-Protokoll: Ereignisanzeige › Windows-Protokolle › Anwendung, Quelle `WgAutoSwitch`. Es werden nur Zustandswechsel und Fehler protokolliert.
+Configuration file: `%ProgramData%\WgAutoSwitch\config.ini` (normally edited through the GUI; see `config.example.ini`).
+Event log: *Windows Logs › Application*, source `WgAutoSwitch`. Only state changes and errors are logged.
 
-## Sicherheit
+## Security
 
-- Dienst als `NT SERVICE\WgAutoSwitch` mit nur `SeChangeNotifyPrivilege` und `SeCreateGlobalPrivilege` (für das Zustandssignal an die Oberfläche). Auf den Tunnel-Diensten hat er nur Start, Stop und Status.
-- Named Pipe `\\.\pipe\WgAutoSwitch`: nur lokal, Netzwerkanmeldungen verweigert; Zugriff nur für SYSTEM, Administratoren und interaktiv angemeldete Benutzer. Darüber gehen nur Status, Verbinden, Trennen und Pausieren. Konfiguration und Schlüssel ändern ausschliesslich Administratoren.
-- Die Oberfläche prüft, dass der Pipe-Server wirklich der Dienst ist (Prozess-ID), und verbindet sich nur mit Identifikationsstufe.
-- Kein offener Port, keine Telemetrie, kein Auto-Update.
-- `config.ini` gehört Administratoren, der Dienst darf nur lesen. Bei unsicheren Rechten greift der Fail-safe.
-- Kill-Switch bis Stufe 2: In der .conf `AllowedIPs = 0.0.0.0/0, ::/0` verwenden. WireGuard für Windows blockiert dann ungetunnelten Verkehr, solange der Tunnel läuft.
+- The service runs as the virtual account `NT SERVICE\WgAutoSwitch` with only `SeChangeNotifyPrivilege` and `SeCreateGlobalPrivilege` (for the state signal to the GUI). On the WireGuard tunnel services it may only start, stop and query status, granted by service ACL.
+- Named pipe `\\.\pipe\WgAutoSwitch`: local only, network logons denied; accessible to SYSTEM, Administrators and interactively signed-in users. It accepts only status, connect, disconnect and pause. Configuration and keys can only be changed by Administrators.
+- The GUI checks that the pipe server really is the service (process ID) and connects at identification level only.
+- No listening ports, no telemetry, no auto-update.
+- `config.ini` is owned by Administrators; the service can only read it. If the file permissions are unsafe, the fail-safe applies.
+- Kill switch: use `AllowedIPs = 0.0.0.0/0, ::/0` in the `.conf`. WireGuard for Windows then blocks untunneled traffic while the tunnel is up.
 
-## Bekannte Grenzen
+## Energy
 
-- **SSID/BSSID unter Windows 11 24H2+:** Möglicherweise nur mit aktivierten Standortdiensten lesbar. Fehlen sie, gilt das WLAN als unbekannt (Fail-safe); Regeln funktionieren dann weiter mit Gateway-MAC plus DNS-Suffix.
-- **Handshake-Zeit:** Die offizielle WireGuard-Installation gibt sie nur an Administratoren heraus. Die Oberfläche zeigt stattdessen die Datenzähler des Tunneladapters.
-- **Datenzähler:** Bei sichtbarem Fenster aktualisieren sie sich alle 2 Sekunden. Im Tray gibt es keinen Timer, die Oberfläche wartet nur auf das Signal des Dienstes.
-- Abnahme-Messungen (WPR, `powercfg /sleepstudy`, Grösse, Working Set) stehen noch aus.
+The service sleeps in a single wait call without a timeout. It is only woken by Windows notifications (interface, address and connectivity changes, resume from standby), by requests from the GUI, or by one-shot timers armed after such an event. While idle there is no polling and there are no timers. The process runs with EcoQoS and background priority. With the window hidden, the GUI waits only for the service's state signal; the 2-second refresh of the traffic counters runs only while the window is visible.
 
-## Aufbau
+## Known limitations
+
+- **SSID/BSSID on Windows 11 24H2+** may only be readable with location services enabled. If missing, the Wi-Fi network is treated as unknown (fail-safe); rules based on gateway MAC plus DNS suffix keep working.
+- **Handshake time** is not shown: the official WireGuard installation exposes it to Administrators only. The GUI shows the adapter's traffic counters instead.
+- Requires the official WireGuard for Windows installation (driver and tunnel services).
+
+## Layout
 
 ```
-src/decide.h     Entscheidungslogik (ohne Windows, Unit-Tests in tests/)
-src/common.*     Pfade, Konfiguration lesen/schreiben, Netzmerkmale, Tunnel-Dienste, Pipe-Client
-src/wgas.cpp     Dienst (Ereignisschleife, Pipe-Server) + Kommandozeile
-src/gui.cpp      Tray, Fenster, Regel-Editor, Tunnel-Editor (Admin-Modus)
+src/decide.h     decision logic (no Windows headers; unit tests in tests/)
+src/common.*     paths, config read/write, network features, tunnel services, pipe client
+src/wgas.cpp     service (event loop, pipe server) and command line
+src/gui.cpp      tray, main window, rule editor, tunnel editor (elevated mode)
+build.cmd        reproducible build (MSVC, ARM64/x64)
 ```

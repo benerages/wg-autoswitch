@@ -18,3 +18,6 @@ CMakeSettings.json
 # Sicherheit: niemals WireGuard-Konfigurationen mit privaten Schluesseln einchecken
 *.conf
 !config.example.ini
+
+# Release-Pakete
+dist/
