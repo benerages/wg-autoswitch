@@ -16,8 +16,8 @@ Once approved, Windows release binaries (`wgas.exe`, `wgas-gui.exe`, ARM64 and x
 
 | Role | Members |
 |---|---|
-| Committers and reviewers | [repository owner](../../) |
-| Approvers | [repository owner](../../) |
+| Committers and reviewers | [benerages](https://github.com/benerages) |
+| Approvers | [benerages](https://github.com/benerages) |
 
 All members use multi-factor authentication for GitHub and SignPath.
 
