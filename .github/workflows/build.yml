@@ -107,7 +107,7 @@ jobs:
             $dir = "dist/wg-autoswitch-$version-$arch"
             New-Item -ItemType Directory -Force $dir | Out-Null
             Copy-Item (Join-Path $bin.DirectoryName 'wgas.exe'), (Join-Path $bin.DirectoryName 'wgas-gui.exe') $dir
-            Copy-Item README.md, config.example.ini $dir
+            Copy-Item INSTALLATION.txt, README.md, config.example.ini $dir
             Get-ChildItem -Filter 'LICENSE*' | Copy-Item -Destination $dir
             Compress-Archive "$dir/*" "dist/wg-autoswitch-$version-windows-$arch.zip" -Force
             Remove-Item -Recurse $dir
