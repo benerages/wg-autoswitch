@@ -1,0 +1,29 @@
+// gui.rc - Versionsinfo fuer wgas-gui.exe
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION     1,1,0,0
+ PRODUCTVERSION  1,1,0,0
+ FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+ FILEFLAGS       0
+ FILEOS          VOS_NT_WINDOWS32
+ FILETYPE        VFT_APP
+ FILESUBTYPE     0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040704b0"
+    BEGIN
+      VALUE "FileDescription",  "WG-AutoSwitch - Oberflaeche"
+      VALUE "FileVersion",      "1.1.0"
+      VALUE "InternalName",     "wgas-gui"
+      VALUE "OriginalFilename", "wgas-gui.exe"
+      VALUE "ProductName",      "WG-AutoSwitch"
+      VALUE "ProductVersion",   "1.1.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0407, 1200
+  END
+END
