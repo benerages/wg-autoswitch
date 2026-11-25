@@ -54,7 +54,12 @@ A **trusted network** (no tunnel) needs the gateway MAC **plus** a DNS suffix, S
 
 ## Build
 
-Requirements: [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) with *Desktop development with C++*, *MSVC ARM64 build tools* and the Windows 11 SDK (10.0.22621 or newer). No other dependencies: C++20 and Win32 only, no frameworks.
+Requirements: [Build Tools for Visual Studio 2026](https://visualstudio.microsoft.com/downloads/) (Visual Studio 2022 works as well) with
+- workload *Desktop development with C++*
+- *MSVC ARM64 build tools* (for ARM64) and *MSVC x64/x86 build tools* (for x64)
+- Windows 11 SDK (10.0.22621 or newer)
+
+No other dependencies: C++20 and Win32 only, no frameworks. `build.cmd` finds the newest installed Visual Studio / Build Tools via `vswhere` and works from a plain command prompt. Building from the Visual Studio IDE also works: open the folder and use the tasks from `tasks.vs.json` (right-click the root folder).
 
 ```bat
 build.cmd test      & rem unit tests (decision logic, translation table)

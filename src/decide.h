@@ -195,6 +195,36 @@ inline bool IsValidDnsSuffix(const wchar_t* s) {
     return n > 0;
 }
 
+// ------------------------------------------------------------ Versionen
+
+// "1.2.3" oder "v1.2.3" -> {1,2,3}. Genau drei Zahlen, jeweils hoechstens 5 Stellen.
+inline bool ParseVersion(const wchar_t* s, unsigned out[3]) {
+    if (*s == L'v' || *s == L'V') ++s;
+    for (int i = 0; i < 3; ++i) {
+        unsigned v = 0;
+        int digits = 0;
+        while (*s >= L'0' && *s <= L'9') {
+            if (++digits > 5) return false;
+            v = v * 10 + static_cast<unsigned>(*s - L'0');
+            ++s;
+        }
+        if (!digits) return false;
+        out[i] = v;
+        if (i < 2) {
+            if (*s != L'.') return false;
+            ++s;
+        }
+    }
+    return *s == 0;
+}
+
+// <0: a aelter, 0: gleich, >0: a neuer
+inline int CompareVersion(const unsigned a[3], const unsigned b[3]) {
+    for (int i = 0; i < 3; ++i)
+        if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+}
+
 // ------------------------------------------------------------ Regeln
 
 // Alle in der Regel angegebenen Merkmale muessen passen. Eine Regel ohne

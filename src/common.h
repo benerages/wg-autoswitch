@@ -27,6 +27,7 @@
 #include <wchar.h>
 
 #include "decide.h"
+#include "version.h"
 #include "i18n.h"
 
 namespace wgas {
@@ -120,6 +121,18 @@ int    FindKnown(const KnownTunnels& k, const wchar_t* name);
 // Empfangene/gesendete Bytes des WireGuard-Adapters (Alias = Tunnelname).
 bool   TunnelTraffic(const wchar_t* tunnel, ULONG64& rx, ULONG64& tx);
 DWORD  ServiceProcessId();   // 0 = Dienst laeuft nicht
+
+// ------------------------------------------------------------------ Version, Signatur, Pruefsummen
+void CurrentVersion(unsigned out[3]);
+// Dateiversion aus der Versionsressource einer .exe.
+bool ReadFileVersion(const wchar_t* path, unsigned out[3]);
+// Authenticode-Signatur gueltig (inkl. Sperrpruefung) UND Herausgeber (CN) == expected.
+// 0 = in Ordnung, sonst Fehlercode (z. B. TRUST_E_NOSIGNATURE). signer: gefundener Herausgeber.
+DWORD VerifyPublisher(const wchar_t* path, const wchar_t* expected, wchar_t* signer, size_t cap);
+// SHA-256 einer Datei als 64 Kleinbuchstaben-Hexziffern.
+bool Sha256File(const wchar_t* path, wchar_t* hex, size_t cap);
+// Native Architektur des Geraets ("arm64" oder "x64"), auch wenn ein x64-Build emuliert laeuft.
+const wchar_t* NativeArch();
 
 // ------------------------------------------------------------------ Named Pipe (Client)
 // Sendet eine Anfrage an den Dienst. Prueft, dass der Pipe-Server wirklich der

@@ -229,6 +229,21 @@ int main() {
         CHECK(NetFingerprint(a, 1) != NetFingerprint(a, 0));
     }
 
+    // Versionen (Update-Pruefung, Schutz vor Downgrade)
+    {
+        unsigned a[3], b[3];
+        CHECK(ParseVersion(L"v1.3.0", a) && a[0] == 1 && a[1] == 3 && a[2] == 0);
+        CHECK(ParseVersion(L"1.10.2", b) && b[1] == 10);
+        CHECK(CompareVersion(b, a) > 0);            // 1.10.2 > 1.3.0 (numerisch, nicht alphabetisch)
+        CHECK(CompareVersion(a, a) == 0);
+        CHECK(CompareVersion(a, b) < 0);
+        CHECK(!ParseVersion(L"1.3", a));
+        CHECK(!ParseVersion(L"1.3.0-beta", a));
+        CHECK(!ParseVersion(L"v1..0", a));
+        CHECK(!ParseVersion(L"123456.0.0", a));
+        CHECK(!ParseVersion(L"", a));
+    }
+
     std::printf("%d Pruefungen, %d Fehler\n", g_run, g_fail);
     return g_fail ? 1 : 0;
 }

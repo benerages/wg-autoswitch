@@ -1,7 +1,15 @@
 // common.cpp - gemeinsamer Code von wgas.exe und wgas-gui.exe (siehe common.h).
 #include "common.h"
+#include <wintrust.h>
+#include <softpub.h>
+#include <wincrypt.h>
+#include <bcrypt.h>
 
 #pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "wintrust.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "version.lib")
 #pragma comment(lib, "wlanapi.lib")
 #pragma comment(lib, "advapi32.lib")
 
@@ -824,6 +832,119 @@ DWORD PipeTransact(const wchar_t* req, wchar_t* resp, DWORD respChars) {
     if (e != NO_ERROR) { resp[0] = 0; return e; }
     resp[n / sizeof(wchar_t)] = 0;
     return NO_ERROR;
+}
+
+// =====================================================================================
+// Version, Signatur, Pruefsummen (Update)
+// =====================================================================================
+
+void CurrentVersion(unsigned out[3]) {
+    out[0] = WGAS_VERSION_MAJOR;
+    out[1] = WGAS_VERSION_MINOR;
+    out[2] = WGAS_VERSION_PATCH;
+}
+
+bool ReadFileVersion(const wchar_t* path, unsigned out[3]) {
+    DWORD dummy = 0;
+    const DWORD size = GetFileVersionInfoSizeW(path, &dummy);
+    if (!size || size > 64 * 1024) return false;
+    HANDLE heap = GetProcessHeap();
+    void* buf = HeapAlloc(heap, 0, size);
+    bool ok = false;
+    VS_FIXEDFILEINFO* ffi = nullptr;
+    UINT len = 0;
+    if (buf && GetFileVersionInfoW(path, 0, size, buf) &&
+        VerQueryValueW(buf, L"\\", reinterpret_cast<LPVOID*>(&ffi), &len) && ffi && len >= sizeof(VS_FIXEDFILEINFO)) {
+        out[0] = HIWORD(ffi->dwFileVersionMS);
+        out[1] = LOWORD(ffi->dwFileVersionMS);
+        out[2] = HIWORD(ffi->dwFileVersionLS);
+        ok = true;
+    }
+    if (buf) HeapFree(heap, 0, buf);
+    return ok;
+}
+
+DWORD VerifyPublisher(const wchar_t* path, const wchar_t* expected, wchar_t* signer, size_t cap) {
+    signer[0] = 0;
+    // 1. Signatur und Zertifikatskette (inkl. Sperrpruefung) durch Windows pruefen lassen.
+    WINTRUST_FILE_INFO fi;
+    ZeroMemory(&fi, sizeof fi);
+    fi.cbStruct = sizeof fi;
+    fi.pcwszFilePath = path;
+    WINTRUST_DATA wd;
+    ZeroMemory(&wd, sizeof wd);
+    wd.cbStruct = sizeof wd;
+    wd.dwUIChoice = WTD_UI_NONE;
+    wd.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+    wd.dwUnionChoice = WTD_CHOICE_FILE;
+    wd.pFile = &fi;
+    wd.dwStateAction = WTD_STATEACTION_VERIFY;
+    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    const LONG trust = WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &action, &wd);
+    wd.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &action, &wd);
+
+    // 2. Herausgeber (Common Name des Signaturzertifikats) auslesen.
+    HCERTSTORE store = nullptr;
+    HCRYPTMSG msg = nullptr;
+    if (CryptQueryObject(CERT_QUERY_OBJECT_FILE, path, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+                         CERT_QUERY_FORMAT_FLAG_BINARY, 0, nullptr, nullptr, nullptr, &store, &msg, nullptr)) {
+        DWORD n = 0;
+        HANDLE heap = GetProcessHeap();
+        if (CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &n) && n) {
+            CMSG_SIGNER_INFO* si = static_cast<CMSG_SIGNER_INFO*>(HeapAlloc(heap, 0, n));
+            if (si && CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM, 0, si, &n)) {
+                CERT_INFO ci;
+                ZeroMemory(&ci, sizeof ci);
+                ci.Issuer = si->Issuer;
+                ci.SerialNumber = si->SerialNumber;
+                PCCERT_CONTEXT cert = CertFindCertificateInStore(store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0,
+                                                                 CERT_FIND_SUBJECT_CERT, &ci, nullptr);
+                if (cert) {
+                    CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, signer, static_cast<DWORD>(cap));
+                    CertFreeCertificateContext(cert);
+                }
+            }
+            if (si) HeapFree(heap, 0, si);
+        }
+        CryptMsgClose(msg);
+        CertCloseStore(store, 0);
+    }
+    if (trust != ERROR_SUCCESS) return static_cast<DWORD>(trust);
+    return StrEq(signer, expected) ? NO_ERROR : static_cast<DWORD>(TRUST_E_SUBJECT_NOT_TRUSTED);
+}
+
+bool Sha256File(const wchar_t* path, wchar_t* hex, size_t cap) {
+    if (cap < 65) return false;
+    hex[0] = 0;
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_HASH_HANDLE h = nullptr;
+    bool ok = BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) &&
+              BCRYPT_SUCCESS(BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0));
+    static BYTE buf[64 * 1024];
+    DWORD n = 0;
+    while (ok && ReadFile(f, buf, sizeof buf, &n, nullptr) && n > 0)
+        ok = BCRYPT_SUCCESS(BCryptHashData(h, buf, n, 0));
+    BYTE digest[32];
+    ok = ok && BCRYPT_SUCCESS(BCryptFinishHash(h, digest, sizeof digest, 0));
+    if (h) BCryptDestroyHash(h);
+    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+    CloseHandle(f);
+    if (!ok) return false;
+    for (int i = 0; i < 32; ++i) swprintf_s(hex + i * 2, cap - static_cast<size_t>(i) * 2, L"%02x", static_cast<unsigned>(digest[i]));
+    return true;
+}
+
+const wchar_t* NativeArch() {
+    USHORT process = 0, native = 0;
+    if (IsWow64Process2(GetCurrentProcess(), &process, &native) && native == IMAGE_FILE_MACHINE_ARM64) return L"arm64";
+#if defined(_M_ARM64)
+    return L"arm64";
+#else
+    return L"x64";
+#endif
 }
 
 } // namespace wgas

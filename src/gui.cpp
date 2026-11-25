@@ -14,6 +14,7 @@
 // aktualisiert ein 2-s-Timer die Datenzaehler.
 
 #include "common.h"
+#include "update.h"
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -42,8 +43,9 @@ constexpr wchar_t kRunValue[]    = L"WgAutoSwitchGui";
 constexpr wchar_t kUserKey[]     = L"Software\\WgAutoSwitch";
 constexpr wchar_t kTitle[]       = L"WG-AutoSwitch";
 
-enum : UINT { WM_APP_TRAY = WM_APP + 1, WM_APP_SHOW, WM_APP_ELEVDONE };
-enum : UINT_PTR { TIMER_REFRESH = 1, TIMER_RECONNECT = 2 };
+enum : UINT { WM_APP_TRAY = WM_APP + 1, WM_APP_SHOW, WM_APP_ELEVDONE, WM_APP_UPDCHECK, WM_APP_UPDREADY };
+enum : UINT_PTR { TIMER_REFRESH = 1, TIMER_RECONNECT = 2, TIMER_UPDATE = 3 };
+constexpr UINT kNinBalloonUserClick = WM_USER + 5;   // NIN_BALLOONUSERCLICK
 
 enum : int {
     IDC_TAB = 100, IDC_STATUS, IDC_INSTALL, IDC_TUNLIST, IDC_CONNECT, IDC_DISCONNECT, IDC_AUTO,
@@ -55,6 +57,7 @@ enum : int {
 enum : UINT {
     ID_TRAY_OPEN = 1000, ID_TRAY_DISCONNECT, ID_TRAY_AUTO, ID_TRAY_PAUSE15, ID_TRAY_PAUSE60, ID_TRAY_PAUSE480,
     ID_TRAY_RESUME, ID_TRAY_AUTOSTART, ID_TRAY_EXIT, ID_TRAY_LANG_AUTO, ID_TRAY_LANG_DE, ID_TRAY_LANG_EN,
+    ID_TRAY_UPDATE_CHECK, ID_TRAY_UPDATE_AUTO, ID_TRAY_UPDATE_INSTALL, ID_TRAY_ABOUT,
     ID_TRAY_TUNNEL0 = 1100,
 };
 
@@ -87,6 +90,7 @@ struct Model {
     int       nTun;
     TunInfo   tun[kMaxKnown];
     Config    cfg;          // Regeln und Optionen, wie der Dienst sie verwendet
+    wchar_t   svcVersion[16];
 };
 
 Model  g_m;
@@ -108,6 +112,8 @@ UINT      g_taskbarCreated;
 HANDLE    g_stateEv;
 int       g_page;       // 0 Tunnel, 1 Auto-Tunneling
 HANDLE    g_mutex;      // Einzelinstanz; beim Sprachwechsel vor dem Neustart freigegeben
+UpdateInfo g_upd;       // Ergebnis der letzten Update-Pruefung
+bool      g_updChecking, g_updDownloading;
 
 int S(int v) { return MulDiv(v, g_dpi, 96); }
 
@@ -293,7 +299,7 @@ void FirstRunDefaults() {
 }
 
 // ---- Admin-Aktionen per UAC. Ende wird ueber einen Threadpool-Wait gemeldet.
-enum class Op { None, Generic, SetConfig };
+enum class Op { None, Generic, SetConfig, Update };
 struct Pending {
     HANDLE process;
     HANDLE wait;
@@ -373,6 +379,8 @@ void ParseStatus(wchar_t* rsp) {
             StrCopy(m.mode, 16, NextField(p));
             m.pausedUntil = _wcstoui64(NextField(p), nullptr, 10);
             StrCopy(m.manualTunnel, kNameLen, NextField(p));
+        } else if (StrEq(tag, L"VER")) {
+            StrCopy(m.svcVersion, 16, NextField(p));
         } else if (StrEq(tag, L"CFG")) {
             m.cfgValid = _wtoi(NextField(p)) == 1;
             StrCopy(m.cfgErr, 512, NextField(p));
@@ -513,6 +521,8 @@ void HideMain() {
     KillTimer(g_main, TIMER_REFRESH);
 }
 
+bool AutoUpdateEnabled();
+
 void TrayMenu() {
     HMENU menu = CreatePopupMenu();
     HMENU pause = CreatePopupMenu();
@@ -545,6 +555,16 @@ void TrayMenu() {
     AppendMenuW(lang, MF_STRING | (ov && StrIEq(ov, L"de") ? MF_CHECKED : 0), ID_TRAY_LANG_DE, L"Deutsch");
     AppendMenuW(lang, MF_STRING | (ov && StrIEq(ov, L"en") ? MF_CHECKED : 0), ID_TRAY_LANG_EN, L"English");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(lang), CurrentLanguage() == Lang::De ? L"Sprache / Language" : L"Language / Sprache");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (g_upd.available) {
+        wchar_t item[96];
+        swprintf_s(item, _countof(item), T(L"Update auf %ls installieren …"), g_upd.tag);
+        AppendMenuW(menu, MF_STRING | (g_updDownloading ? MF_GRAYED : 0), ID_TRAY_UPDATE_INSTALL, item);
+    }
+    AppendMenuW(menu, MF_STRING | (g_updChecking ? MF_GRAYED : 0), ID_TRAY_UPDATE_CHECK, T(L"Nach Updates suchen"));
+    AppendMenuW(menu, MF_STRING | (AutoUpdateEnabled() ? MF_CHECKED : 0), ID_TRAY_UPDATE_AUTO, T(L"Automatisch nach Updates suchen"));
+    AppendMenuW(menu, MF_STRING, ID_TRAY_ABOUT, T(L"Über WG-AutoSwitch …"));
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN, T(L"Öffnen"));
     AppendMenuW(menu, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_TRAY_AUTOSTART, T(L"Beim Anmelden starten"));
     AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, T(L"Beenden"));
@@ -1488,15 +1508,183 @@ void OnCommand(int id) {
     }
 }
 
-// Sprache speichern und die Oberflaeche auf Wunsch neu starten (Texte werden beim Start gesetzt).
-void ChangeLanguage(const wchar_t* code) {
-    SetLanguageOverride(code);
-    InitLanguage(false);
-    if (MessageBoxW(g_main, T(L"Die Sprache wird nach einem Neustart der Oberfläche übernommen. Jetzt neu starten?"),
-                    kTitle, MB_YESNO | MB_ICONQUESTION) != IDYES)
+// =====================================================================================
+// Version und Updates
+// =====================================================================================
+
+DWORD GetUserDword(const wchar_t* name, DWORD def) {
+    DWORD v = 0, cb = sizeof v;
+    return RegGetValueW(HKEY_CURRENT_USER, kUserKey, name, RRF_RT_REG_DWORD, nullptr, &v, &cb) == ERROR_SUCCESS ? v : def;
+}
+
+void SetUserValue(const wchar_t* name, DWORD type, const void* data, DWORD bytes) {
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kUserKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS) return;
+    RegSetValueExW(k, name, 0, type, static_cast<const BYTE*>(data), bytes);
+    RegCloseKey(k);
+}
+
+void SetUserDword(const wchar_t* name, DWORD v) { SetUserValue(name, REG_DWORD, &v, sizeof v); }
+
+// Automatische Pruefung: standardmaessig an, im Tray-Menue abschaltbar (siehe PRIVACY.md).
+bool AutoUpdateEnabled() { return GetUserDword(L"AutoUpdateCheck", 1) != 0; }
+
+// Datenschutzhinweis zur Update-Pruefung: einmal je Benutzer (SignPath-Bedingung).
+void ShowPrivacyNoticeOnce() {
+    if (GetUserDword(L"PrivacyNoticeShown", 0)) return;
+    SetUserDword(L"PrivacyNoticeShown", 1);
+    wchar_t text[900];
+    swprintf_s(text, _countof(text),
+               T(L"WG-AutoSwitch sucht einmal täglich auf GitHub nach einer neuen Version (api.github.com).\n\nÜbertragen werden dabei nur die üblichen Daten einer HTTPS-Anfrage (IP-Adresse, Programmversion) – keine Netz- oder Konfigurationsdaten. Updates werden erst nach Ihrer Bestätigung installiert.\n\nAbschalten: Tray-Menü › Automatisch nach Updates suchen.\nDatenschutz: https://github.com/%ls/blob/master/PRIVACY.md"),
+               WGAS_REPO_WSTR);
+    MessageBoxW(g_main, text, kTitle, MB_OK | MB_ICONINFORMATION);
+}
+
+void ShowAbout() {
+    wchar_t text[600];
+    swprintf_s(text, _countof(text),
+               T(L"WG-AutoSwitch %ls\nDienst: %ls\n\nSchaltet WireGuard-Tunnel je nach Netz automatisch.\nhttps://github.com/%ls\n\nLizenz: MIT · geschrieben mit Claude (Anthropic)"),
+               WGAS_VERSION_WSTR, g_m.svcVersion[0] ? g_m.svcVersion : L"–", WGAS_REPO_WSTR);
+    MessageBoxW(g_main, text, kTitle, MB_OK | MB_ICONINFORMATION);
+}
+
+void OpenReleasePage() {
+    wchar_t url[256];
+    if (IsProjectUrl(g_upd.pageUrl)) StrCopy(url, 256, g_upd.pageUrl);
+    else swprintf_s(url, _countof(url), L"https://github.com/%ls/releases", WGAS_REPO_WSTR);
+    ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// Ergebnisse der Hintergrund-Threads; der Hauptthread liest sie erst nach der Meldung.
+UpdateInfo g_updTmp;
+wchar_t g_updDir[MAX_PATH], g_updMsg[512], g_updSigner[256];
+
+DWORD WINAPI CheckThread(LPVOID manual) {
+    const DWORD e = CheckLatest(g_updTmp);
+    PostMessageW(g_main, WM_APP_UPDCHECK, reinterpret_cast<WPARAM>(manual), static_cast<LPARAM>(e));
+    return 0;
+}
+
+DWORD WINAPI DownloadThread(LPVOID) {
+    const DWORD e = DownloadUpdate(g_upd, g_updDir, _countof(g_updDir), g_updMsg, _countof(g_updMsg), g_updSigner,
+                                   _countof(g_updSigner));
+    PostMessageW(g_main, WM_APP_UPDREADY, 0, static_cast<LPARAM>(e));
+    return 0;
+}
+
+void StartUpdateCheck(bool manual) {
+    if (g_updChecking) return;
+    g_updChecking = true;
+    HANDLE t = CreateThread(nullptr, 0, CheckThread, reinterpret_cast<LPVOID>(static_cast<INT_PTR>(manual ? 1 : 0)), 0, nullptr);
+    if (t) CloseHandle(t);
+    else g_updChecking = false;
+}
+
+void StartUpdateInstall() {
+    if (g_updDownloading) return;
+    if (!FileExists(g_paths.exe)) {
+        Msg(g_main, T(L"Für Updates muss WG-AutoSwitch installiert sein (Dienst installieren)."), MB_ICONWARNING);
         return;
+    }
+    g_updDownloading = true;
+    StrCopy(g_nid.szTip, _countof(g_nid.szTip), T(L"Update wird heruntergeladen …"));
+    g_nid.uFlags = NIF_TIP | NIF_SHOWTIP;
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+    HANDLE t = CreateThread(nullptr, 0, DownloadThread, nullptr, 0, nullptr);
+    if (t) CloseHandle(t);
+    else g_updDownloading = false;
+}
+
+void ShowUpdateDialog() {
+    if (!g_upd.available) return;
+    wchar_t ver[24], notes[620], text[1600];
+    swprintf_s(ver, _countof(ver), L"%u.%u.%u", g_upd.version[0], g_upd.version[1], g_upd.version[2]);
+    StrCopy(notes, 600, g_upd.notes);
+    if (StrLen(g_upd.notes) > 599) Appendf(notes, _countof(notes), L" …");
+    swprintf_s(text, _countof(text),
+               T(L"WG-AutoSwitch %ls ist verfügbar (installiert: %ls).\n\n%ls\n\nJa = herunterladen und installieren\nNein = Release-Seite öffnen\nAbbrechen = später"),
+               ver, WGAS_VERSION_WSTR, notes);
+    const int r = MessageBoxW(g_main, text, kTitle, MB_YESNOCANCEL | MB_ICONINFORMATION | MB_SETFOREGROUND);
+    if (r == IDYES) StartUpdateInstall();
+    else if (r == IDNO) OpenReleasePage();
+}
+
+void OnUpdateChecked(bool manual, DWORD e) {
+    g_updChecking = false;
+    wchar_t text[400];
+    if (e) {
+        if (manual) {
+            swprintf_s(text, _countof(text), T(L"Die Update-Prüfung ist fehlgeschlagen (Fehler %lu)."), e);
+            Msg(g_main, text, MB_ICONWARNING);
+        }
+        return;
+    }
+    g_upd = g_updTmp;
+    const ULONGLONG now = NowFileTime();
+    SetUserValue(L"LastUpdateCheck", REG_QWORD, &now, sizeof now);
+    if (!g_upd.available) {
+        if (manual) {
+            swprintf_s(text, _countof(text), T(L"Sie verwenden die neueste Version (%ls)."), WGAS_VERSION_WSTR);
+            Msg(g_main, text);
+        }
+        return;
+    }
+    if (manual) { ShowUpdateDialog(); return; }
+    // Automatisch: einmal je Version eine Tray-Meldung
+    wchar_t notified[32] = L"";
+    DWORD cb = sizeof notified;
+    RegGetValueW(HKEY_CURRENT_USER, kUserKey, L"NotifiedVersion", RRF_RT_REG_SZ, nullptr, notified, &cb);
+    if (StrEq(notified, g_upd.tag)) return;
+    SetUserValue(L"NotifiedVersion", REG_SZ, g_upd.tag, static_cast<DWORD>((wcslen(g_upd.tag) + 1) * sizeof(wchar_t)));
+    g_nid.uFlags = NIF_INFO;
+    g_nid.dwInfoFlags = NIIF_INFO;
+    StrCopy(g_nid.szInfoTitle, _countof(g_nid.szInfoTitle), T(L"Update verfügbar"));
+    swprintf_s(g_nid.szInfo, _countof(g_nid.szInfo), T(L"WG-AutoSwitch %ls ist verfügbar. Klicken zum Anzeigen."), g_upd.tag);
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+}
+
+void OnUpdateDownloaded(DWORD e) {
+    g_updDownloading = false;
+    UpdateTray(NIM_MODIFY);
+    wchar_t text[800];
+    if (e == kUpdateUnsigned) {
+        swprintf_s(text, _countof(text),
+                   T(L"Dieses Release ist nicht signiert oder nicht von %ls signiert (gefunden: %ls).\n\nAutomatisch installiert werden nur signierte Releases. Release-Seite öffnen?"),
+                   WGAS_PUBLISHER_WSTR, g_updSigner[0] ? g_updSigner : L"–");
+        if (MessageBoxW(g_main, text, kTitle, MB_YESNO | MB_ICONWARNING) == IDYES) OpenReleasePage();
+        return;
+    }
+    if (e) {
+        wchar_t code[32];
+        swprintf_s(code, _countof(code), L"%lu", e);
+        swprintf_s(text, _countof(text), T(L"Das Update konnte nicht heruntergeladen oder geprüft werden: %ls"),
+                   g_updMsg[0] ? g_updMsg : code);
+        Msg(g_main, text, MB_ICONERROR);
+        return;
+    }
+    wchar_t params[MAX_PATH + 32];
+    swprintf_s(params, _countof(params), L"update \"%ls\"", g_updDir);
+    RunWgasElevated(g_main, params, Op::Update);
+}
+
+// Automatische Pruefung: hoechstens alle 20 Stunden; Timer laeuft danach im 24-h-Takt.
+void OnUpdateTimer() {
+    KillTimer(g_main, TIMER_UPDATE);
+    if (AutoUpdateEnabled()) {
+        ULONGLONG last = 0;
+        DWORD cb = sizeof last;
+        RegGetValueW(HKEY_CURRENT_USER, kUserKey, L"LastUpdateCheck", RRF_RT_REG_QWORD, nullptr, &last, &cb);
+        const ULONGLONG twentyHours = 20ull * 3600ull * 10000000ull;
+        if (NowFileTime() - last >= twentyHours) StartUpdateCheck(false);
+    }
+    SetTimer(g_main, TIMER_UPDATE, 24u * 3600u * 1000u, nullptr);
+}
+
+// Oberflaeche neu starten (nach Sprachwechsel oder Update). exe = nullptr: dieselbe Datei.
+void RestartGui(const wchar_t* path) {
     wchar_t exe[MAX_PATH], cmd[MAX_PATH + 8];
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (path) StrCopy(exe, MAX_PATH, path);
+    else GetModuleFileNameW(nullptr, exe, MAX_PATH);
     swprintf_s(cmd, _countof(cmd), L"\"%ls\"", exe);
     if (g_mutex) { CloseHandle(g_mutex); g_mutex = nullptr; }   // neue Instanz darf starten
     STARTUPINFOW si;
@@ -1508,6 +1696,15 @@ void ChangeLanguage(const wchar_t* code) {
         CloseHandle(pi.hProcess);
     }
     DestroyWindow(g_main);
+}
+
+// Sprache speichern und die Oberflaeche auf Wunsch neu starten (Texte werden beim Start gesetzt).
+void ChangeLanguage(const wchar_t* code) {
+    SetLanguageOverride(code);
+    InitLanguage(false);
+    if (MessageBoxW(g_main, T(L"Die Sprache wird nach einem Neustart der Oberfläche übernommen. Jetzt neu starten?"),
+                    kTitle, MB_YESNO | MB_ICONQUESTION) == IDYES)
+        RestartGui(nullptr);
 }
 
 void OnTrayCommand(UINT id) {
@@ -1533,6 +1730,10 @@ void OnTrayCommand(UINT id) {
     case ID_TRAY_LANG_AUTO:  ChangeLanguage(nullptr); break;
     case ID_TRAY_LANG_DE:    ChangeLanguage(L"de"); break;
     case ID_TRAY_LANG_EN:    ChangeLanguage(L"en"); break;
+    case ID_TRAY_UPDATE_CHECK:   StartUpdateCheck(true); break;
+    case ID_TRAY_UPDATE_AUTO:    SetUserDword(L"AutoUpdateCheck", AutoUpdateEnabled() ? 0 : 1); break;
+    case ID_TRAY_UPDATE_INSTALL: ShowUpdateDialog(); break;
+    case ID_TRAY_ABOUT:          ShowAbout(); break;
     default: break;
     }
 }
@@ -1597,9 +1798,19 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_TIMER:
         if (wp == TIMER_REFRESH || wp == TIMER_RECONNECT) Refresh();
+        else if (wp == TIMER_UPDATE) OnUpdateTimer();
+        return 0;
+    case WM_APP_UPDCHECK:
+        OnUpdateChecked(wp != 0, static_cast<DWORD>(lp));
+        return 0;
+    case WM_APP_UPDREADY:
+        OnUpdateDownloaded(static_cast<DWORD>(lp));
         return 0;
     case WM_APP_TRAY:
         switch (LOWORD(lp)) {
+        case kNinBalloonUserClick:
+            ShowUpdateDialog();
+            break;
         case NIN_SELECT:
         case NIN_KEYSELECT:
             if (IsWindowVisible(hwnd)) HideMain(); else ShowMain();
@@ -1622,11 +1833,16 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             GetExitCodeProcess(p->process, &code);
             if (p->wait) UnregisterWait(p->wait);
             CloseHandle(p->process);
+            const bool updated = p->op == Op::Update && code == 0;
             if (p->op == Op::SetConfig) {
                 if (code == 0) g_dirty = false;
                 if (p->tmp[0]) DeleteFileW(p->tmp);   // falls wgas.exe sie nicht schon geloescht hat
             }
             ZeroBytes(p, sizeof *p);
+            if (updated) {   // neue Oberflaeche aus dem Programmordner starten
+                RestartGui(g_paths.guiExe);
+                return 0;
+            }
         }
         Refresh();
         return 0;
@@ -1672,7 +1888,9 @@ int RunMain(bool startHidden) {
     FirstRunDefaults();
     if (AutostartEnabled()) SetAutostart(true);   // Pfad aktualisieren (z. B. nach "Dienst installieren")
 
-    g_main = CreateWindowExW(0, kMainClass, kTitle, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
+    wchar_t title[64];
+    swprintf_s(title, _countof(title), L"%ls %ls", kTitle, WGAS_VERSION_WSTR);
+    g_main = CreateWindowExW(0, kMainClass, title, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
                              100, 100, nullptr, nullptr, g_inst, nullptr);
     if (!g_main) return 1;
     g_dpi = static_cast<int>(GetDpiForWindow(g_main));
@@ -1691,6 +1909,8 @@ int RunMain(bool startHidden) {
     Refresh();
     UpdateTray(NIM_ADD);
     if (!startHidden) ShowMain();
+    ShowPrivacyNoticeOnce();
+    SetTimer(g_main, TIMER_UPDATE, 60u * 1000u, nullptr);   // erste automatische Pruefung nach 1 Minute
 
     // Nachrichtenschleife: wartet zusaetzlich auf das Zustandssignal des Dienstes.
     MSG msg;

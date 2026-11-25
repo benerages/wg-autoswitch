@@ -334,7 +334,7 @@ void BuildStatus(SvcState& st, wchar_t* out, size_t cap) {
     out[0] = 0;
     const wchar_t* mode = st.pausedUntil ? L"paused" : st.manual ? L"manual" : L"auto";
     wchar_t f1[kDnsLen], f2[kDnsLen], f3[kDnsLen];
-    Appendf(out, cap, L"V\t2\nSVC\t%ls\t%llu\t%ls\n", mode, st.pausedUntil, st.manual ? st.manualTunnel : L"");
+    Appendf(out, cap, L"V\t2\nVER\t%ls\nSVC\t%ls\t%llu\t%ls\n", WGAS_VERSION_WSTR, mode, st.pausedUntil, st.manual ? st.manualTunnel : L"");
     SanitizeField(st.cfgErr, f1, _countof(f1));
     Appendf(out, cap, L"CFG\t%d\t%ls\n", st.cfgValid ? 1 : 0, f1);
     Appendf(out, cap, L"OPT\t%u\t%d\t%d\t%ls\n", g_cfg.debounceMs, g_cfg.noNetworkOn ? 1 : 0, g_cfg.captiveWait ? 1 : 0,
@@ -1189,6 +1189,117 @@ int CmdSetConfig(const wchar_t* src) {
     return 0;
 }
 
+// Installiert ein heruntergeladenes Update (von wgas-gui.exe per UAC gestartet).
+// Sicherheit: laeuft nur als installierte wgas.exe (Admin-geschuetzter Ordner). Die Dateien werden
+// zuerst in einen nur fuer Admins/SYSTEM beschreibbaren Ordner kopiert und DORT geprueft:
+// gueltige Signatur des erwarteten Herausgebers, gleiche Version beider Programme, neuer als jetzt.
+int CmdUpdate(const wchar_t* srcDir) {
+    if (!RequireAdmin()) return 1;
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    if (_wcsicmp(self, g_paths.exe) != 0) {
+        Err(T(L"Update nur über die installierte wgas.exe möglich (%ls).\n"), g_paths.exe);
+        return 1;
+    }
+    static const wchar_t* const kFiles[] = { L"wgas.exe", L"wgas-gui.exe" };
+    wchar_t staging[MAX_PATH];
+    swprintf_s(staging, _countof(staging), L"%ls\\update", g_paths.dataDir);
+    CreateDirectoryW(g_paths.dataDir, nullptr);
+    CreateDirectoryW(staging, nullptr);
+    ApplySddl(staging, L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+
+    unsigned versions[2][3] = {};
+    for (int i = 0; i < 2; ++i) {
+        wchar_t src[MAX_PATH], dst[MAX_PATH], signer[256];
+        swprintf_s(src, _countof(src), L"%ls\\%ls", srcDir, kFiles[i]);
+        swprintf_s(dst, _countof(dst), L"%ls\\%ls", staging, kFiles[i]);
+        if (!CopyFileW(src, dst, FALSE)) { Err(T(L"Fehler: %ls fehlt im Update-Paket.\n"), kFiles[i]); return 1; }
+        const DWORD v = VerifyPublisher(dst, WGAS_PUBLISHER_WSTR, signer, _countof(signer));
+        if (v != NO_ERROR) {
+            Err(T(L"Fehler: %ls ist nicht gültig signiert (Herausgeber: %ls, Fehler 0x%08lx).\n"), kFiles[i],
+                signer[0] ? signer : L"-", static_cast<unsigned long>(v));
+            return 1;
+        }
+        if (!ReadFileVersion(dst, versions[i])) { Err(T(L"Fehler: Programmversionen im Paket passen nicht zusammen.\n")); return 1; }
+    }
+    unsigned cur[3];
+    CurrentVersion(cur);
+    if (CompareVersion(versions[0], versions[1]) != 0) { Err(T(L"Fehler: Programmversionen im Paket passen nicht zusammen.\n")); return 1; }
+    if (CompareVersion(versions[0], cur) <= 0) {
+        Err(T(L"Fehler: Update-Version %u.%u.%u ist nicht neuer als %ls.\n"), versions[0][0], versions[0][1], versions[0][2],
+            WGAS_VERSION_WSTR);
+        return 1;
+    }
+
+    // Dienst anhalten, Dateien tauschen. Laufende Programme (dieser Prozess, die Oberflaeche)
+    // lassen sich nicht ueberschreiben, aber umbenennen: alt -> *.old, neu an den Originalnamen.
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    SC_HANDLE svc = scm ? OpenServiceW(scm, kSvcName, SERVICE_STOP | SERVICE_QUERY_STATUS) : nullptr;
+    if (svc) StopAndWait(svc, 15000);
+    bool ok = true;
+    int done = 0;
+    for (int i = 0; i < 2 && ok; ++i) {
+        wchar_t target[MAX_PATH], old[MAX_PATH], staged[MAX_PATH];
+        swprintf_s(target, _countof(target), L"%ls\\%ls", g_paths.progDir, kFiles[i]);
+        swprintf_s(old, _countof(old), L"%ls.old", target);
+        swprintf_s(staged, _countof(staged), L"%ls\\%ls", staging, kFiles[i]);
+        if (FileExists(old) && !DeleteFileW(old)) {
+            // Rest eines frueheren Updates, noch in Gebrauch: zufaelligen Namen verwenden
+            swprintf_s(old, _countof(old), L"%ls.%lu.old", target, GetTickCount());
+        }
+        if (FileExists(target) && !MoveFileExW(target, old, MOVEFILE_REPLACE_EXISTING)) ok = false;
+        if (ok && !CopyFileW(staged, target, FALSE)) {
+            MoveFileExW(old, target, MOVEFILE_REPLACE_EXISTING);   // zurueck
+            ok = false;
+        }
+        if (ok) {
+            MoveFileExW(old, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);   // alte Datei beim Neustart loeschen
+            ++done;
+        }
+    }
+    if (!ok) {
+        const DWORD e = GetLastError();
+        // Bereits getauschte Datei(en) zuruecksetzen
+        for (int i = 0; i < done; ++i) {
+            wchar_t target[MAX_PATH], old[MAX_PATH];
+            swprintf_s(target, _countof(target), L"%ls\\%ls", g_paths.progDir, kFiles[i]);
+            swprintf_s(old, _countof(old), L"%ls.old", target);
+            MoveFileExW(old, target, MOVEFILE_REPLACE_EXISTING);
+        }
+        if (svc) StartServiceW(svc, 0, nullptr);
+        Err(T(L"Fehler: Dateien konnten nicht ersetzt werden (Fehler %lu); alte Version wiederhergestellt.\n"), e);
+        if (svc) CloseServiceHandle(svc);
+        if (scm) CloseServiceHandle(scm);
+        return 1;
+    }
+    if (svc) CloseServiceHandle(svc);
+    if (scm) CloseServiceHandle(scm);
+
+    // Die NEUE wgas.exe richtet den Dienst ein (Konfiguration ggf. geaendert) und startet ihn.
+    wchar_t cmd[MAX_PATH + 32];
+    swprintf_s(cmd, _countof(cmd), L"\"%ls\" --gui install", g_paths.exe);
+    STARTUPINFOW si;
+    ZeroMemory(&si, sizeof si);
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi;
+    DWORD code = 1;
+    if (CreateProcessW(g_paths.exe, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 120000);
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    for (const wchar_t* f : kFiles) {
+        wchar_t staged[MAX_PATH];
+        swprintf_s(staged, _countof(staged), L"%ls\\%ls", staging, f);
+        DeleteFileW(staged);
+    }
+    RemoveDirectoryW(staging);
+    if (code != 0) { PrintError(L"wgas install", code); return 1; }
+    Out(T(L"Update auf %u.%u.%u installiert.\n"), versions[0][0], versions[0][1], versions[0][2]);
+    return 0;
+}
+
 int CmdStatus() {
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE);
     if (!scm) { PrintError(T(L"Dienststeuerung oeffnen"), GetLastError()); return 1; }
@@ -1307,7 +1418,8 @@ int CmdReload() {
 }
 
 void Usage() {
-    Out(T(L"WG-AutoSwitch 1.1 - schaltet WireGuard-Tunnel je nach Netz\n\nOberflaeche: wgas-gui.exe (Tray). Kommandozeile:\n  wgas install                 Dienst installieren und starten (Admin)\n  wgas uninstall [/purge]      Dienst entfernen; /purge auch Tunnel und Konfiguration (Admin)\n  wgas import <a.conf> [...]   Tunnel aus OPNsense-Peer-Generator importieren (Admin)\n  wgas remove <tunnel>         Tunnel entfernen (Admin)\n  wgas status                  Zustand, Netze und Soll-Zustand anzeigen\n  wgas check                   config.ini pruefen, Merkmale des Netzes zeigen (Admin)\n  wgas reload                  config.ini neu laden (Admin)\n  wgas connect <tunnel>        manuell verbinden (bis zum naechsten Netzwechsel)\n  wgas disconnect              manuell trennen (bis zum naechsten Netzwechsel)\n  wgas auto                    manuelle Wahl aufheben\n  wgas pause <minuten>         Automatik anhalten (0 = fortsetzen)\n\nKonfiguration: %ls\n"), g_paths.cfg);
+    Out(L"WG-AutoSwitch %ls\n\n", WGAS_VERSION_WSTR);
+    Out(T(L"Oberflaeche: wgas-gui.exe (Tray). Kommandozeile:\n  wgas install                 Dienst installieren und starten (Admin)\n  wgas uninstall [/purge]      Dienst entfernen; /purge auch Tunnel und Konfiguration (Admin)\n  wgas import <a.conf> [...]   Tunnel aus OPNsense-Peer-Generator importieren (Admin)\n  wgas remove <tunnel>         Tunnel entfernen (Admin)\n  wgas status                  Zustand, Netze und Soll-Zustand anzeigen\n  wgas check                   config.ini pruefen, Merkmale des Netzes zeigen (Admin)\n  wgas reload                  config.ini neu laden (Admin)\n  wgas connect <tunnel>        manuell verbinden (bis zum naechsten Netzwechsel)\n  wgas disconnect              manuell trennen (bis zum naechsten Netzwechsel)\n  wgas auto                    manuelle Wahl aufheben\n  wgas pause <minuten>         Automatik anhalten (0 = fortsetzen)\n  wgas version                 Version anzeigen\n\nKonfiguration: %ls\n"), g_paths.cfg);
 }
 
 // Per Doppelklick gestartet? Dann gehoert die Konsole nur diesem Prozess.
@@ -1329,6 +1441,8 @@ int Dispatch(int argc, wchar_t** argv) {
     if (StrIEq(cmd, L"import") && argc >= 2) return CmdImport(argc - 1, argv + 1);
     if (StrIEq(cmd, L"remove") && argc == 2) return CmdRemove(argv[1]);
     if (StrIEq(cmd, L"setconfig") && argc == 2) return CmdSetConfig(argv[1]);
+    if (StrIEq(cmd, L"update") && argc == 2) return CmdUpdate(argv[1]);
+    if (StrIEq(cmd, L"version") || StrIEq(cmd, L"--version")) { Out(L"WG-AutoSwitch %ls\n", WGAS_VERSION_WSTR); return 0; }
     if (StrIEq(cmd, L"status"))    return CmdStatus();
     if (StrIEq(cmd, L"check"))     return CmdCheck();
     if (StrIEq(cmd, L"reload"))    return CmdReload();

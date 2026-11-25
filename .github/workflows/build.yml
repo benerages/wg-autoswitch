@@ -27,6 +27,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Version steht nur in src/version.h; ein Release-Tag muss dazu passen (SignPath verlangt
+      # korrekte Versionsangaben in den signierten Programmen).
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path src/version.h -Pattern '#define WGAS_VERSION_STR\s+"([0-9]+\.[0-9]+\.[0-9]+)"').Matches[0].Groups[1].Value
+          if (-not $v) { throw 'WGAS_VERSION_STR in src/version.h nicht gefunden' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") {
+            throw "Tag $env:GITHUB_REF_NAME passt nicht zu src/version.h ($v). Version erhoehen oder Tag v$v verwenden."
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
       - name: Unit tests
         shell: cmd
         run: build.cmd test
@@ -51,7 +64,7 @@ jobs:
       # SignPath holt das Artefakt direkt von GitHub und prueft dabei, dass es aus diesem Workflow stammt.
       - name: Upload unsigned binaries
         id: upload-unsigned
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: unsigned-binaries
           path: unsigned/
@@ -73,7 +86,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { "dev-$($env:GITHUB_SHA.Substring(0,7))" }
+          $version = '${{ steps.version.outputs.version }}'
+          if ($env:GITHUB_REF_TYPE -ne 'tag') { $version = "$version-dev-$($env:GITHUB_SHA.Substring(0,7))" }
           $src = 'unsigned'
           if (Test-Path signed) {
             # Falls SignPath ein ZIP liefert: entpacken
@@ -105,7 +119,7 @@ jobs:
           "Signiert: $($src -eq 'signed')" | Out-Host
 
       - name: Upload packages
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: packages
           path: dist/
@@ -118,7 +132,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v6
         with:
           name: packages
           path: dist

@@ -23,8 +23,8 @@ if not exist "%OUT%" mkdir "%OUT%"
 rem --- Meldungstabelle und Ressourcen
 pushd "%OUT%"
 mc -U ..\..\src\wgas_msg.mc || goto :fail_pop
-rc /nologo /i . /fo wgas.res ..\..\src\wgas.rc || goto :fail_pop
-rc /nologo /fo gui.res ..\..\src\gui.rc || goto :fail_pop
+rc /nologo /i . /i ..\..\src /fo wgas.res ..\..\src\wgas.rc || goto :fail_pop
+rc /nologo /i ..\..\src /fo gui.res ..\..\src\gui.rc || goto :fail_pop
 popd
 
 rem --- Compiler/Linker gemaess Projektvorgaben
@@ -33,13 +33,13 @@ set "CFLAGS=/nologo /std:c++20 /utf-8 /O1 /GL /GS /guard:cf /W4 /permissive- /EH
 set "CFLAGS=%CFLAGS% /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /DNTDDI_VERSION=0x0A00000C"
 if not defined WGAS_NOWX set "CFLAGS=%CFLAGS% /WX"
 set "LFLAGS=/LTCG /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /guard:cf"
-set "LIBS=/NODEFAULTLIB:libucrt.lib ucrt.lib iphlpapi.lib wlanapi.lib advapi32.lib user32.lib"
+set "LIBS=/NODEFAULTLIB:libucrt.lib ucrt.lib iphlpapi.lib wlanapi.lib advapi32.lib user32.lib wintrust.lib crypt32.lib bcrypt.lib version.lib"
 if /i "%ARCH%"=="x64" set "LFLAGS=%LFLAGS% /CETCOMPAT"
 
 rem Dienst + CLI
 cl %CFLAGS% /I %OUT% /Fo%OUT%\ /Fe%OUT%\wgas.exe src\wgas.cpp src\common.cpp src\i18n.cpp %OUT%\wgas.res /link %LFLAGS% /SUBSYSTEM:CONSOLE %LIBS% || goto :fail
 rem Oberflaeche
-cl %CFLAGS% /I %OUT% /Fo%OUT%\ /Fe%OUT%\wgas-gui.exe src\gui.cpp src\common.cpp src\i18n.cpp %OUT%\gui.res /link %LFLAGS% /SUBSYSTEM:WINDOWS %LIBS% gdi32.lib comctl32.lib comdlg32.lib shell32.lib || goto :fail
+cl %CFLAGS% /I %OUT% /Fo%OUT%\ /Fe%OUT%\wgas-gui.exe src\gui.cpp src\update.cpp src\common.cpp src\i18n.cpp %OUT%\gui.res /link %LFLAGS% /SUBSYSTEM:WINDOWS %LIBS% gdi32.lib comctl32.lib comdlg32.lib shell32.lib winhttp.lib || goto :fail
 
 if defined WGAS_SIGN_THUMB (
   signtool sign /fd SHA256 /sha1 %WGAS_SIGN_THUMB% /tr http://timestamp.digicert.com /td SHA256 %OUT%\wgas.exe %OUT%\wgas-gui.exe || goto :fail
@@ -63,7 +63,7 @@ rem --- Visual-Studio-Umgebung laden, falls cl.exe nicht schon fuer das Ziel ber
 if /i "%VSCMD_ARG_TGT_ARCH%"=="%~1" exit /b 0
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
-  echo vswhere.exe nicht gefunden. Bitte "Build Tools fuer Visual Studio 2022" installieren:
+  echo vswhere.exe nicht gefunden. Bitte "Build Tools fuer Visual Studio 2026" installieren:
   echo   Workload "Desktopentwicklung mit C++" inkl. "MSVC ARM64-Buildtools" und Windows 11 SDK.
   exit /b 1
 )
